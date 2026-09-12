@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="quick-light">
+  <schema path="/org/gnome/shell/extensions/quick-light/" id="org.gnome.shell.extensions.quick-light">
+    
+    <!-- Keyboard Shortcuts -->
+    <key type="as" name="shortcut-primary">
+      <default><![CDATA[['<Control><Super>space']]]></default>
+      <summary>Primary shortcut</summary>
+      <description>Keyboard shortcut to toggle Quick Light search modal.</description>
+    </key>
+    <key type="as" name="shortcut-secondary">
+      <default><![CDATA[[]]]></default>
+      <summary>Secondary shortcut</summary>
+      <description>Optional alternate keyboard shortcut to toggle Quick Light.</description>
+    </key>
+
+    <!-- Monitor & Display Options -->
+    <key type="b" name="popup-at-cursor">
+      <default>false</default>
+      <summary>Popup on cursor monitor</summary>
+      <description>Display the spotlight search box on the monitor containing the mouse pointer.</description>
+    </key>
+    <key type="i" name="preferred-monitor">
+      <default>0</default>
+      <summary>Preferred monitor index</summary>
+      <description>Index of preferred display monitor (0 for primary).</description>
+    </key>
+    <key type="i" name="monitor-count">
+      <default>1</default>
+      <summary>Detected monitor count</summary>
+      <description>Cached count of connected display outputs.</description>
+    </key>
+
+    <!-- UI Scaling & Geometry -->
+    <key type="d" name="window-width-scale">
+      <default>0.15</default>
+      <summary>Window width scale factor</summary>
+      <description>Fraction of monitor width added to base window width.</description>
+    </key>
+    <key type="d" name="window-height-scale">
+      <default>0.15</default>
+      <summary>Window height scale factor</summary>
+      <description>Fraction of monitor height added to base results box height.</description>
+    </key>
+    <key type="d" name="border-radius">
+      <default>16.0</default>
+      <summary>Window corner border radius</summary>
+      <description>Border radius in pixels for the search window container.</description>
+    </key>
+    <key type="i" name="border-thickness">
+      <default>1</default>
+      <summary>Window border outline thickness</summary>
+      <description>Border thickness in pixels (0 for none).</description>
+    </key>
+
+    <!-- Appearance & Styling -->
+    <key type="(dddd)" name="border-color">
+      <default>(0.4, 0.45, 0.55, 0.45)</default>
+      <summary>Border outline color (RGBA)</summary>
+      <description>RGBA color tuple for the spotlight window outline border.</description>
+    </key>
+    <key type="(dddd)" name="background-color">
+      <default>(0.12, 0.14, 0.18, 0.88)</default>
+      <summary>Backdrop background color (RGBA)</summary>
+      <description>RGBA color tuple for the floating modal background.</description>
+    </key>
+    <key type="(dddd)" name="text-color">
+      <default>(1.0, 1.0, 1.0, 0.0)</default>
+      <summary>Custom text color override (RGBA)</summary>
+      <description>RGBA color tuple for search text (alpha 0 for system default).</description>
+    </key>
+    <key type="(dddd)" name="indicator-color">
+      <default>(1.0, 1.0, 1.0, 1.0)</default>
+      <summary>Panel indicator icon color (RGBA)</summary>
+      <description>RGBA color tuple for status bar panel indicator.</description>
+    </key>
+    <key type="i" name="entry-font-size">
+      <default>15</default>
+      <summary>Search input text font size</summary>
+      <description>Font size in points for the search entry field.</description>
+    </key>
+    <key type="i" name="results-font-size">
+      <default>13</default>
+      <summary>Search results text font size</summary>
+      <description>Font size in points for results lists.</description>
+    </key>
+
+    <!-- Behavior & Animation -->
+    <key type="b" name="enable-animations">
+      <default>true</default>
+      <summary>Enable window animations</summary>
+      <description>Smooth fade and scale transitions when opening/closing modal.</description>
+    </key>
+    <key type="d" name="animation-duration">
+      <default>140.0</default>
+      <summary>Animation transition duration</summary>
+      <description>Animation duration in milliseconds.</description>
+    </key>
+
+    <!-- Top Panel Indicator -->
+    <key type="b" name="show-panel-indicator">
+      <default>false</default>
+      <summary>Show status panel indicator</summary>
+      <description>Display quick-toggle icon in GNOME Shell status area.</description>
+    </key>
+
+  </schema>
+</schemalist>
