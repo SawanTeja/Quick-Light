@@ -1,0 +1,17 @@
+{
+  "name": "Quick Light",
+  "description": "A fast, beautiful spotlight-style application search launcher for GNOME Shell.",
+  "uuid": "quick-light@tejashvi.dev",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50"
+  ],
+  "url": "https://github.com/tejashvi/quick-light",
+  "schema-id": "org.gnome.shell.extensions.quick-light",
+  "gettext-domain": "quick-light",
+  "version": 1
+}
