@@ -64,6 +64,8 @@ export const QuickLightModal = GObject.registerClass(
       this._modalHeight = 440;
       this._initialHeight = 64;
 
+      this._setupWebSearchWidget();
+
       this.hide();
       this.opacity = 0;
     }

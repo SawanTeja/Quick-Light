@@ -23,85 +23,102 @@
     <key type="i" name="preferred-monitor">
       <default>0</default>
       <summary>Preferred monitor index</summary>
-      <description>Index of preferred display monitor (0 for primary).</description>
+      <description>Index of preferred monitor to show the search window (0 for primary display).</description>
     </key>
     <key type="i" name="monitor-count">
       <default>1</default>
       <summary>Detected monitor count</summary>
-      <description>Cached count of connected display outputs.</description>
-    </key>
-
-    <!-- UI Scaling & Geometry -->
-    <key type="d" name="window-width-scale">
-      <default>0.15</default>
-      <summary>Window width scale factor</summary>
-      <description>Fraction of monitor width added to base window width.</description>
-    </key>
-    <key type="d" name="window-height-scale">
-      <default>0.15</default>
-      <summary>Window height scale factor</summary>
-      <description>Fraction of monitor height added to base results box height.</description>
-    </key>
-    <key type="d" name="border-radius">
-      <default>16.0</default>
-      <summary>Window corner border radius</summary>
-      <description>Border radius in pixels for the search window container.</description>
-    </key>
-    <key type="i" name="border-thickness">
-      <default>1</default>
-      <summary>Window border outline thickness</summary>
-      <description>Border thickness in pixels (0 for none).</description>
-    </key>
-
-    <!-- Appearance & Styling -->
-    <key type="(dddd)" name="border-color">
-      <default>(0.4, 0.45, 0.55, 0.45)</default>
-      <summary>Border outline color (RGBA)</summary>
-      <description>RGBA color tuple for the spotlight window outline border.</description>
-    </key>
-    <key type="(dddd)" name="background-color">
-      <default>(0.12, 0.14, 0.18, 0.88)</default>
-      <summary>Backdrop background color (RGBA)</summary>
-      <description>RGBA color tuple for the floating modal background.</description>
-    </key>
-    <key type="(dddd)" name="text-color">
-      <default>(1.0, 1.0, 1.0, 0.0)</default>
-      <summary>Custom text color override (RGBA)</summary>
-      <description>RGBA color tuple for search text (alpha 0 for system default).</description>
-    </key>
-    <key type="(dddd)" name="indicator-color">
-      <default>(1.0, 1.0, 1.0, 1.0)</default>
-      <summary>Panel indicator icon color (RGBA)</summary>
-      <description>RGBA color tuple for status bar panel indicator.</description>
-    </key>
-    <key type="i" name="entry-font-size">
-      <default>15</default>
-      <summary>Search input text font size</summary>
-      <description>Font size in points for the search entry field.</description>
-    </key>
-    <key type="i" name="results-font-size">
-      <default>13</default>
-      <summary>Search results text font size</summary>
-      <description>Font size in points for results lists.</description>
-    </key>
-
-    <!-- Behavior & Animation -->
-    <key type="b" name="enable-animations">
-      <default>true</default>
-      <summary>Enable window animations</summary>
-      <description>Smooth fade and scale transitions when opening/closing modal.</description>
-    </key>
-    <key type="d" name="animation-duration">
-      <default>140.0</default>
-      <summary>Animation transition duration</summary>
-      <description>Animation duration in milliseconds.</description>
+      <description>Number of monitors detected by Quick Light.</description>
     </key>
 
     <!-- Top Panel Indicator -->
     <key type="b" name="show-panel-indicator">
       <default>false</default>
-      <summary>Show status panel indicator</summary>
-      <description>Display quick-toggle icon in GNOME Shell status area.</description>
+      <summary>Show status bar icon</summary>
+      <description>Display an icon in the top GNOME panel to open Quick Light.</description>
+    </key>
+    <key type="(dddd)" name="indicator-color">
+      <default>(1.0, 1.0, 1.0, 1.0)</default>
+      <summary>Status icon color</summary>
+      <description>RGBA color of the status bar indicator icon.</description>
+    </key>
+
+    <!-- Window Sizing -->
+    <key type="d" name="window-width-scale">
+      <default>0.15</default>
+      <summary>Width scale factor</summary>
+      <description>Scaling factor to adjust the width of the search popup window.</description>
+    </key>
+    <key type="d" name="window-height-scale">
+      <default>0.15</default>
+      <summary>Height scale factor</summary>
+      <description>Scaling factor to adjust the height of the search popup window.</description>
+    </key>
+
+    <!-- Appearance & Styling -->
+    <key type="d" name="border-radius">
+      <default>16.0</default>
+      <summary>Border corner radius</summary>
+      <description>Corner curvature radius for the spotlight modal in pixels.</description>
+    </key>
+    <key type="i" name="border-thickness">
+      <default>1</default>
+      <summary>Border thickness</summary>
+      <description>Border width in pixels (0 for borderless).</description>
+    </key>
+    <key type="(dddd)" name="border-color">
+      <default>(0.4, 0.45, 0.55, 0.45)</default>
+      <summary>Border color</summary>
+      <description>RGBA color of the spotlight window border.</description>
+    </key>
+    <key type="(dddd)" name="background-color">
+      <default>(0.12, 0.14, 0.18, 0.88)</default>
+      <summary>Modal background color</summary>
+      <description>RGBA color and opacity of the spotlight window backdrop.</description>
+    </key>
+    <key type="(dddd)" name="text-color">
+      <default>(1.0, 1.0, 1.0, 0.0)</default>
+      <summary>Custom text color</summary>
+      <description>Custom RGBA text color. Set alpha to 0 for automatic luminance-based coloring.</description>
+    </key>
+    <key type="i" name="entry-font-size">
+      <default>15</default>
+      <summary>Search input font size</summary>
+      <description>Font size in points for the search entry field.</description>
+    </key>
+    <key type="i" name="results-font-size">
+      <default>13</default>
+      <summary>Results font size</summary>
+      <description>Font size in points for the search result items.</description>
+    </key>
+
+    <!-- Animation & Timing -->
+    <key type="b" name="enable-animations">
+      <default>true</default>
+      <summary>Enable window animations</summary>
+      <description>Animate opacity and scale when displaying or closing the search popup.</description>
+    </key>
+    <key type="d" name="animation-duration">
+      <default>140.0</default>
+      <summary>Animation transition duration</summary>
+      <description>Duration of the ease animation in milliseconds.</description>
+    </key>
+
+    <!-- Web Search (Google) -->
+    <key type="b" name="enable-web-search">
+      <default>true</default>
+      <summary>Enable Google web search</summary>
+      <description>Search keywords on Google directly from the spotlight search modal.</description>
+    </key>
+    <key type="i" name="web-search-mode">
+      <default>0</default>
+      <summary>Web search Enter key behavior</summary>
+      <description>0: Always search Google on Enter, 1: Search Google when no local app matches (Fallback), 2: Shift+Enter only</description>
+    </key>
+    <key type="s" name="web-search-engine-url">
+      <default>'https://www.google.com/search?q=%s'</default>
+      <summary>Web search URL template</summary>
+      <description>URL template with %s for the query parameter.</description>
     </key>
 
   </schema>
