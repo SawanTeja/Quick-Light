@@ -13,7 +13,7 @@ import { ShortcutWidget } from './shortcuts.js';
 export default class QuickLightPreferences extends ExtensionPreferences {
   fillPreferencesWindow(window) {
     const _ = this.gettext ? this.gettext.bind(this) : (s) => s;
-    const settings = this.getSettings();
+    const settings = this.getSettings('org.gnome.shell.extensions.quick-light');
 
     window.set_default_size(680, 720);
     window.set_search_enabled(true);

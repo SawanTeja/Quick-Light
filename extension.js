@@ -12,7 +12,7 @@ import { QuickLightModal } from './quickLightModal.js';
  */
 export default class QuickLightExtension extends Extension {
   enable() {
-    this.settings = this.getSettings();
+    this.settings = this.getSettings('org.gnome.shell.extensions.quick-light');
     this.monitorManager = new MonitorManager(this.settings);
     this.themeStyler = new ThemeStyler();
     this.keybindManager = new KeybindManager();

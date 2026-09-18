@@ -11,7 +11,7 @@
     "50"
   ],
   "url": "https://github.com/tejashvi/quick-light",
-  "schema-id": "org.gnome.shell.extensions.quick-light",
+  "settings-schema": "org.gnome.shell.extensions.quick-light",
   "gettext-domain": "quick-light",
   "version": 1
 }
