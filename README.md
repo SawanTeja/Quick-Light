@@ -1,4 +1,4 @@
-# Quick Light ⚡
+# Quick Light
 
 A fast, beautiful spotlight-style application search launcher for GNOME Shell.
 
