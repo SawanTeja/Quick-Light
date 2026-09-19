@@ -63,6 +63,7 @@ export const QuickLightModal = GObject.registerClass(
       // Event signal IDs
       this._stageKeyFocusId = 0;
       this._stageKeyPressId = 0;
+      this._stageCaptureId = 0;
       this._windowCreatedId = 0;
       this._fullscreenId = 0;
 
@@ -225,11 +226,6 @@ export const QuickLightModal = GObject.registerClass(
     _updateInitialHeight() {
       const scaleFactor = St.ThemeContext.get_for_stage(global.stage).scale_factor || 1;
 
-      const scVisible = this._searchController?.visible;
-      const wsVisible = this._webSearchItem?.visible;
-      if (this._searchController) this._searchController.hide();
-      if (this._webSearchItem) this._webSearchItem.hide();
-
       const [, modalNatHeight] = this.get_preferred_height(this._modalWidth);
       if (modalNatHeight > 0) {
         this._initialHeight = Math.round(modalNatHeight);
@@ -238,9 +234,6 @@ export const QuickLightModal = GObject.registerClass(
         const baseHeight = entryNatHeight > 0 ? entryNatHeight : (this._entry?.height > 0 ? this._entry.height : 48);
         this._initialHeight = Math.round(baseHeight + 20 * scaleFactor);
       }
-
-      if (scVisible && this._searchController) this._searchController.show();
-      if (wsVisible && this._webSearchItem) this._webSearchItem.show();
     }
 
     /**
@@ -448,6 +441,7 @@ export const QuickLightModal = GObject.registerClass(
                 this._webSearchItem.hide();
                 this._updateInitialHeight();
                 this.set_size(this._modalWidth, this._initialHeight);
+                this._grabSearchFocus();
               }
             },
           );
@@ -551,9 +545,10 @@ export const QuickLightModal = GObject.registerClass(
      */
     _grabSearchFocus() {
       if (!this._entry) return;
-      if (this._searchController?._text) {
-        this._searchController._text.grab_key_focus();
-        this._searchController._text.set_cursor_visible(true);
+      const textActor = this._searchController?._text || this._entry.clutter_text;
+      if (textActor) {
+        textActor.grab_key_focus();
+        textActor.set_cursor_visible(true);
       } else {
         this._entry.grab_key_focus();
       }
@@ -565,7 +560,7 @@ export const QuickLightModal = GObject.registerClass(
     _connectEvents() {
       this._disconnectEvents();
 
-      // Monitor focus changes
+      // Monitor focus changes: ensure search entry retains focus while modal is open
       this._stageKeyFocusId = global.stage.connect(
         'notify::key-focus',
         this._onKeyFocusChanged.bind(this),
@@ -575,6 +570,12 @@ export const QuickLightModal = GObject.registerClass(
       this._stageKeyPressId = global.stage.connect(
         'key-press-event',
         this._onStageKeyPressed.bind(this),
+      );
+
+      // Dismiss when clicking outside modal
+      this._stageCaptureId = global.stage.connect(
+        'captured-event',
+        this._onStageCapturedEvent.bind(this),
       );
 
       // Close when full screen changes or windows are created
@@ -615,6 +616,10 @@ export const QuickLightModal = GObject.registerClass(
         global.stage.disconnect(this._stageKeyPressId);
         this._stageKeyPressId = 0;
       }
+      if (this._stageCaptureId && global.stage) {
+        global.stage.disconnect(this._stageCaptureId);
+        this._stageCaptureId = 0;
+      }
       if (this._fullscreenId && global.display) {
         global.display.disconnect(this._fullscreenId);
         this._fullscreenId = 0;
@@ -626,22 +631,53 @@ export const QuickLightModal = GObject.registerClass(
     }
 
     /**
-     * Key focus change handler. If focus moves away from Quick Light, dismiss.
+     * Captured event handler on global.stage to detect clicks outside the modal.
+     */
+    _onStageCapturedEvent(actor, event) {
+      if (!this._isVisible || this._isTransitioning) return Clutter.EVENT_PROPAGATE;
+
+      const type = event.type();
+      if (type === Clutter.EventType.BUTTON_PRESS || type === Clutter.EventType.TOUCH_BEGIN) {
+        const targetActor = global.stage.get_event_actor(event);
+        const insideActor = targetActor && (this.contains(targetActor) || targetActor === this);
+
+        const [clickX, clickY] = event.get_coords();
+        const [modalX, modalY] = this.get_transformed_position();
+        const [modalW, modalH] = this.get_transformed_size();
+
+        const insideBounds = (
+          clickX >= modalX &&
+          clickX <= modalX + modalW &&
+          clickY >= modalY &&
+          clickY <= modalY + modalH
+        );
+
+        if (!insideActor && !insideBounds) {
+          this.close();
+          return Clutter.EVENT_STOP;
+        }
+      }
+
+      return Clutter.EVENT_PROPAGATE;
+    }
+
+    /**
+     * Key focus change handler. Ensure search entry retains focus while modal is open.
      */
     _onKeyFocusChanged() {
-      if (!this._isVisible || !this._entry) return;
+      if (!this._isVisible || !this._entry || this._isTransitioning) return;
 
       const focus = global.stage.get_key_focus();
       const hasFocus = focus && (
         this.contains(focus) ||
-        this._entry?.contains(focus) ||
+        this._entry.contains(focus) ||
         this._searchResults?.contains(focus) ||
         this._webSearchItem?.contains(focus)
       );
 
       if (!hasFocus) {
         GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-          if (this._isVisible) {
+          if (this._isVisible && !this._isTransitioning) {
             const currentFocus = global.stage.get_key_focus();
             const stillHasFocus = currentFocus && (
               this.contains(currentFocus) ||
@@ -650,7 +686,7 @@ export const QuickLightModal = GObject.registerClass(
               this._webSearchItem?.contains(currentFocus)
             );
             if (!stillHasFocus) {
-              this.close();
+              this._grabSearchFocus();
             }
           }
           return GLib.SOURCE_REMOVE;
@@ -681,7 +717,7 @@ export const QuickLightModal = GObject.registerClass(
 
       const textActor = this._searchController?._text;
       const currentFocus = global.stage.get_key_focus();
-      const isEntryFocused = textActor && (currentFocus === textActor || this._entry.contains(currentFocus));
+      const isEntryFocused = textActor && currentFocus && (currentFocus === textActor || this._entry.contains(currentFocus));
 
       // 2. If focus is NOT on the search entry (e.g. user pressed Down arrow into search results):
       if (!isEntryFocused && textActor) {
