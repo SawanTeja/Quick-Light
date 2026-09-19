@@ -124,9 +124,9 @@ export default class QuickLightPreferences extends ExtensionPreferences {
       subtitle: _('Choose what happens when pressing Enter in search'),
     });
     const webSearchModes = new Gtk.StringList();
-    webSearchModes.append(_('Always search Google on Enter'));
-    webSearchModes.append(_('Search Google if no local app matches (Smart Fallback)'));
+    webSearchModes.append(_('Search Google if no search result matches (Smart Fallback)'));
     webSearchModes.append(_('Search Google with Shift + Enter only'));
+    webSearchModes.append(_('Always search Google on Enter'));
     webSearchModeRow.set_model(webSearchModes);
 
     const initialMode = settings.get_int('web-search-mode');

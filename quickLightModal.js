@@ -3,6 +3,7 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
 import GLib from 'gi://GLib';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 /**
@@ -31,6 +32,7 @@ export const QuickLightModal = GObject.registerClass(
 
       this._isVisible = false;
       this._isTransitioning = false;
+      this._isClosing = false;
 
       // Inner vertical layout container
       this._box = new St.BoxLayout({
@@ -55,6 +57,8 @@ export const QuickLightModal = GObject.registerClass(
       this._searchResults = null;
       this._textChangedId = 0;
       this._textKeyPressId = 0;
+      this._resultsScrollId = 0;
+      this._termsChangedId = 0;
 
       // Overview override hooks
       this._origOverviewToggle = null;
@@ -120,6 +124,149 @@ export const QuickLightModal = GObject.registerClass(
         const text = this._searchController?._text?.get_text() || '';
         this._openWebSearch(text.trim());
       });
+
+      this._webSearchItem.connect('key-press-event', (actor, event) => {
+        const symbol = event.get_key_symbol();
+        const state = event.get_state();
+        const isShift = (state & Clutter.ModifierType.SHIFT_MASK) !== 0;
+
+        if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter || symbol === Clutter.KEY_space) {
+          const text = this._searchController?._text?.get_text() || '';
+          this._openWebSearch(text.trim());
+          return Clutter.EVENT_STOP;
+        }
+
+        if (symbol === Clutter.KEY_Tab || symbol === Clutter.KEY_ISO_Left_Tab) {
+          if (isShift || symbol === Clutter.KEY_ISO_Left_Tab) {
+            if (this._searchResults?._defaultResult) {
+              this._searchResults.navigateFocus(St.DirectionType.TAB_BACKWARD);
+            } else {
+              this._grabSearchFocus();
+            }
+          } else {
+            this._grabSearchFocus();
+          }
+          return Clutter.EVENT_STOP;
+        }
+
+        return Clutter.EVENT_PROPAGATE;
+      });
+
+      this._webSearchItem.connect('notify::hover', () => {
+        this._updateWebSearchBadge();
+      });
+    }
+
+    /**
+     * Dynamically update web search tile badge text based on focus and result availability.
+     */
+    _updateWebSearchBadge() {
+      if (!this._webSearchBadge) return;
+
+      const enableWeb = this._settings?.get_boolean('enable-web-search');
+      if (!enableWeb) return;
+
+      const mode = this._settings?.get_int('web-search-mode') ?? 0;
+      const isItemFocused = this._webSearchItem?.has_key_focus();
+
+      if (isItemFocused) {
+        this._webSearchBadge.set_text('↵ Enter');
+        return;
+      }
+
+      if (mode === 2) {
+        // Mode 2: Always search Google on Enter
+        this._webSearchBadge.set_text('↵ Enter');
+      } else if (mode === 1) {
+        // Mode 1: Shift+Enter only
+        this._webSearchBadge.set_text('⇧↵ Shift+Enter');
+      } else {
+        // Mode 0: Smart Fallback (Google only if no search results appear)
+        const hasResults = !!this._searchResults?._defaultResult;
+        this._webSearchBadge.set_text(hasResults ? '⇧↵ Shift+Enter' : '↵ Enter');
+      }
+    }
+
+    /**
+     * Check whether a search query represents a mathematical expression or calculation.
+     */
+    _isMathQuery(query) {
+      if (!query || typeof query !== 'string') return false;
+      const text = query.trim();
+      if (!text) return false;
+
+      // 1. Math functions and constants
+      if (/\b(sqrt|cbrt|sin|cos|tan|asin|acos|atan|log|ln|abs|pow|round|floor|ceil|exp|pi|tau)\b/i.test(text)) {
+        return true;
+      }
+
+      // 2. Percentage expressions (e.g. "15% of 85000", "20%")
+      if (/\d+\s*%\s*(of\s*\d+)?/i.test(text)) {
+        return true;
+      }
+
+      // 3. Numbers combined with arithmetic operators (+, -, *, /, ^, =, ×, ÷)
+      if (/[0-9]/.test(text) && /[\+\-\*\/\^\=x×÷]/.test(text)) {
+        if (/[\d\)]\s*[\+\-\*\/\^\=×÷]\s*[\d\(]/.test(text) || /\d+\s*[\*\/x×÷]\s*\d+/.test(text)) {
+          return true;
+        }
+        if (/^[0-9\s\+\-\*\/\^\%\(\)\.\,\=x×÷]+$/.test(text) && /[\+\*\/\^\=×÷]/.test(text)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    /**
+     * Dynamically prioritize Calculator search results above files,
+     * and give Calculator absolute top priority on math queries.
+     */
+    _reorderSearchProviders(query = '') {
+      if (!this._searchResults || !Array.isArray(this._searchResults._providers)) return;
+
+      const text = (query || this._searchController?._text?.get_text() || '').trim();
+      const isMath = this._isMathQuery(text);
+
+      const getPriority = (provider) => {
+        const id = provider?.id || provider?.appInfo?.get_id() || '';
+
+        // If math query, Calculator has absolute top priority (#0 above everything)
+        if (isMath && (id === 'org.gnome.Calculator.desktop' || id.toLowerCase().includes('calculator'))) {
+          return 0;
+        }
+
+        if (id === 'applications') return 1;
+        if (id === 'org.gnome.Calculator.desktop' || id.toLowerCase().includes('calculator')) return 2;
+        if (id === 'org.gnome.Settings.desktop' || id.toLowerCase().includes('settings')) return 3;
+        if (id === 'org.gnome.clocks.desktop' || id.toLowerCase().includes('clocks')) return 4;
+        if (id === 'org.gnome.Calendar.desktop' || id.toLowerCase().includes('calendar')) return 5;
+        if (id === 'org.gnome.Contacts.desktop' || id.toLowerCase().includes('contacts')) return 6;
+        if (id === 'org.gnome.Characters.desktop' || id.toLowerCase().includes('characters')) return 7;
+        // Files (Nautilus) should always be ranked lower than Calculator and core tools
+        if (id === 'org.gnome.Nautilus.desktop' || id.toLowerCase().includes('nautilus')) return 20;
+        if (id.toLowerCase().includes('chrome') || id.toLowerCase().includes('web') || id.toLowerCase().includes('search')) return 30;
+        return 10;
+      };
+
+      // 1. Sort _providers array in place
+      this._searchResults._providers.sort((a, b) => getPriority(a) - getPriority(b));
+
+      // 2. Reorder child actor displays in _content
+      const content = this._searchResults._content;
+      if (content && typeof content.set_child_at_index === 'function') {
+        let targetIndex = 0;
+        for (const provider of this._searchResults._providers) {
+          if (provider.display && provider.display.get_parent() === content) {
+            try {
+              content.set_child_at_index(provider.display, targetIndex);
+              targetIndex++;
+            } catch (e) {
+              // ignore
+            }
+          }
+        }
+      }
     }
 
     get isVisible() {
@@ -146,6 +293,7 @@ export const QuickLightModal = GObject.registerClass(
       if (this._isVisible || this._isTransitioning) return;
       if (Main.overview.visible) return;
 
+      this._isClosing = false;
       this._acquireUI();
       this._layoutPosition();
       this._connectEvents();
@@ -187,9 +335,12 @@ export const QuickLightModal = GObject.registerClass(
      * Close Quick Light search modal.
      */
     close() {
-      if (!this._isVisible || this._isTransitioning) return;
+      if (!this._isVisible) return;
+      if (this._isClosing) return;
 
-      this._isTransitioning = true;
+      this._isClosing = true;
+      this._isTransitioning = false;
+      this.remove_all_transitions?.();
       this._disconnectEvents();
 
       const useAnimations = this._settings.get_boolean('enable-animations');
@@ -200,6 +351,7 @@ export const QuickLightModal = GObject.registerClass(
         this.hide();
         this._isVisible = false;
         this._isTransitioning = false;
+        this._isClosing = false;
         this._releaseUI();
         global.compositor?.enable_unredirect?.();
       };
@@ -311,7 +463,7 @@ export const QuickLightModal = GObject.registerClass(
         this._searchParent = this._searchController.get_parent();
         this._searchResults = this._searchController._searchResults;
 
-        // Hook into result activation to dismiss modal instantly or perform web search
+        // Hook into result activation to dismiss modal instantly or perform smart web search fallback
         if (this._searchResults && !this._searchResults._origActivateDefault) {
           this._searchResults._origActivateDefault = this._searchResults.activateDefault;
           this._searchResults.activateDefault = () => {
@@ -320,11 +472,18 @@ export const QuickLightModal = GObject.registerClass(
             const enableWeb = this._settings.get_boolean('enable-web-search');
             const mode = this._settings.get_int('web-search-mode');
 
-            if (enableWeb && mode === 0 && query.length > 0) {
+            // Explicit web search mode 2 (Always search Google on Enter)
+            if (enableWeb && mode === 2 && query.length > 0) {
               this._openWebSearch(query);
               return;
             }
 
+            // Force search execution if debounced search is queued
+            if (this._searchResults._searchTimeoutId > 0) {
+              this._searchResults._doSearch();
+            }
+
+            // 1. If we already have a default result (e.g. Discord, Calc, Files):
             if (this._searchResults._defaultResult) {
               this.opacity = 0;
               this._searchResults._origActivateDefault();
@@ -332,10 +491,92 @@ export const QuickLightModal = GObject.registerClass(
                 this.close();
                 return GLib.SOURCE_REMOVE;
               });
-            } else if (enableWeb && query.length > 0 && mode !== 2) {
+              return;
+            }
+
+            // 2. If default result is not yet rendered, check Shell.AppSystem synchronously
+            const appMatches = Shell.AppSystem.search(query);
+            let topAppId = null;
+            if (Array.isArray(appMatches)) {
+              for (const group of appMatches) {
+                if (Array.isArray(group) && group.length > 0) {
+                  topAppId = group[0];
+                  break;
+                }
+              }
+            }
+
+            if (topAppId) {
+              const app = Shell.AppSystem.get_default()?.lookup_app(topAppId);
+              if (app) {
+                this.opacity = 0;
+                app.activate();
+                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                  this.close();
+                  return GLib.SOURCE_REMOVE;
+                });
+                return;
+              }
+            }
+
+            // 3. If asynchronous search providers are still running, wait briefly before fallback
+            if (this._searchResults.searchInProgress) {
+              let checkTicks = 0;
+              const checkId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 25, () => {
+                checkTicks++;
+                if (this._searchResults?._defaultResult) {
+                  this.opacity = 0;
+                  this._searchResults._origActivateDefault();
+                  GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    this.close();
+                    return GLib.SOURCE_REMOVE;
+                  });
+                  return GLib.SOURCE_REMOVE;
+                }
+
+                if (!this._searchResults?.searchInProgress || checkTicks > 12) {
+                  if (this._searchResults?._defaultResult) {
+                    this.opacity = 0;
+                    this._searchResults._origActivateDefault();
+                    GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                      this.close();
+                      return GLib.SOURCE_REMOVE;
+                    });
+                  } else if (enableWeb && query.length > 0 && mode === 0) {
+                    this._openWebSearch(query);
+                  }
+                  return GLib.SOURCE_REMOVE;
+                }
+                return GLib.SOURCE_CONTINUE;
+              });
+              return;
+            }
+
+            // 4. No local results found: opt for Google search only on Smart Fallback (mode 0)
+            if (enableWeb && query.length > 0 && mode === 0) {
               this._openWebSearch(query);
             }
           };
+
+          if (this._searchResults._scrollView) {
+            this._resultsScrollId = this._searchResults._scrollView.connect(
+              'notify::visible',
+              () => this._updateWebSearchBadge(),
+            );
+          }
+          this._termsChangedId = this._searchResults.connect(
+            'terms-changed',
+            () => this._updateWebSearchBadge(),
+          );
+
+          if (!this._searchResults._origMaybeSetInitialSelection) {
+            this._searchResults._origMaybeSetInitialSelection = this._searchResults._maybeSetInitialSelection;
+            this._searchResults._maybeSetInitialSelection = () => {
+              this._reorderSearchProviders();
+              this._searchResults._origMaybeSetInitialSelection();
+            };
+          }
+          this._reorderSearchProviders();
         }
 
         if (this._searchParent) {
@@ -360,11 +601,17 @@ export const QuickLightModal = GObject.registerClass(
             (actor, event) => {
               const symbol = event.get_key_symbol();
 
+              if (symbol === Clutter.KEY_Escape) {
+                this.close();
+                return Clutter.EVENT_STOP;
+              }
+
               if (symbol === Clutter.KEY_Down) {
                 if (!this._searchResults?._defaultResult && this._webSearchItem?.visible) {
                   this._webSearchItem.grab_key_focus();
                   return Clutter.EVENT_STOP;
                 }
+                return Clutter.EVENT_PROPAGATE;
               }
 
               const isEnter = (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter);
@@ -396,22 +643,14 @@ export const QuickLightModal = GObject.registerClass(
                 return Clutter.EVENT_STOP;
               }
 
-              // 3. Mode 0: Always search Google on Enter
-              if (mode === 0) {
+              // 3. Mode 2: Always search Google on Enter
+              if (mode === 2) {
                 this._openWebSearch(query);
                 return Clutter.EVENT_STOP;
               }
 
-              // 4. Mode 1: Fallback (if no local app or default result matches)
-              if (mode === 1) {
-                if (this._searchResults?._defaultResult) {
-                  return Clutter.EVENT_PROPAGATE;
-                } else {
-                  this._openWebSearch(query);
-                  return Clutter.EVENT_STOP;
-                }
-              }
-
+              // 4. Normal Enter in Smart Fallback (mode 0) or Shift+Enter only (mode 1):
+              // Propagate to activateDefault to handle local result activation or fallback
               return Clutter.EVENT_PROPAGATE;
             },
           );
@@ -423,15 +662,15 @@ export const QuickLightModal = GObject.registerClass(
               const text = this._searchController._text.get_text() || '';
               const query = text.trim();
               const enableWeb = this._settings.get_boolean('enable-web-search');
-              const mode = this._settings.get_int('web-search-mode');
 
               if (query.length > 0) {
                 this.set_size(this._modalWidth, this._modalHeight);
                 this._searchController.show();
+                this._reorderSearchProviders(query);
 
                 if (enableWeb) {
                   this._webSearchLabel.set_text(`Search Google for "${query}"`);
-                  this._webSearchBadge.set_text(mode === 2 ? '⇧↵ Shift+Enter' : '↵ Enter');
+                  this._updateWebSearchBadge();
                   this._webSearchItem.show();
                 } else {
                   this._webSearchItem.hide();
@@ -478,6 +717,21 @@ export const QuickLightModal = GObject.registerClass(
         }
         if (this._searchParent) {
           this._searchParent.add_child(this._searchController);
+        }
+
+        if (this._resultsScrollId && this._searchResults?._scrollView) {
+          this._searchResults._scrollView.disconnect(this._resultsScrollId);
+          this._resultsScrollId = 0;
+        }
+
+        if (this._termsChangedId && this._searchResults) {
+          this._searchResults.disconnect(this._termsChangedId);
+          this._termsChangedId = 0;
+        }
+
+        if (this._searchResults?._origMaybeSetInitialSelection) {
+          this._searchResults._maybeSetInitialSelection = this._searchResults._origMaybeSetInitialSelection;
+          delete this._searchResults._origMaybeSetInitialSelection;
         }
 
         if (this._searchResults?._origActivateDefault) {
@@ -631,13 +885,27 @@ export const QuickLightModal = GObject.registerClass(
     }
 
     /**
-     * Captured event handler on global.stage to detect clicks outside the modal.
+     * Captured event handler on global.stage to intercept Escape key and clicks outside modal.
+     * Running during Clutter's capture phase guarantees Escape dismisses Quick Light immediately,
+     * before GNOME Shell's searchController can intercept it or merely reset/clear text.
      */
     _onStageCapturedEvent(actor, event) {
-      if (!this._isVisible || this._isTransitioning) return Clutter.EVENT_PROPAGATE;
+      if (!this._isVisible) return Clutter.EVENT_PROPAGATE;
 
       const type = event.type();
+
+      // Intercept Escape key globally on stage during capture phase
+      if (type === Clutter.EventType.KEY_PRESS) {
+        const symbol = event.get_key_symbol();
+        if (symbol === Clutter.KEY_Escape) {
+          this.close();
+          return Clutter.EVENT_STOP;
+        }
+      }
+
       if (type === Clutter.EventType.BUTTON_PRESS || type === Clutter.EventType.TOUCH_BEGIN) {
+        if (this._isTransitioning) return Clutter.EVENT_PROPAGATE;
+
         const targetActor = global.stage.get_event_actor(event);
         const insideActor = targetActor && (this.contains(targetActor) || targetActor === this);
 
@@ -667,6 +935,8 @@ export const QuickLightModal = GObject.registerClass(
     _onKeyFocusChanged() {
       if (!this._isVisible || !this._entry || this._isTransitioning) return;
 
+      this._updateWebSearchBadge();
+
       const focus = global.stage.get_key_focus();
       const hasFocus = focus && (
         this.contains(focus) ||
@@ -688,6 +958,7 @@ export const QuickLightModal = GObject.registerClass(
             if (!stillHasFocus) {
               this._grabSearchFocus();
             }
+            this._updateWebSearchBadge();
           }
           return GLib.SOURCE_REMOVE;
         });
@@ -700,6 +971,7 @@ export const QuickLightModal = GObject.registerClass(
      * - Seamless editing: Any typing, Backspace, or Delete while browsing search results redirects
      *   immediately to the search entry so the user can always edit the search query.
      * - Up Arrow returns from the top search result back into the search entry.
+     * - Down Arrow from the bottom search result moves focus to the web search action tile.
      */
     _onStageKeyPressed(actor, event) {
       if (!this._isVisible) return Clutter.EVENT_PROPAGATE;
@@ -708,10 +980,7 @@ export const QuickLightModal = GObject.registerClass(
 
       // 1. Escape: close the modal
       if (symbol === Clutter.KEY_Escape) {
-        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-          this.close();
-          return GLib.SOURCE_REMOVE;
-        });
+        this.close();
         return Clutter.EVENT_STOP;
       }
 
@@ -756,9 +1025,25 @@ export const QuickLightModal = GObject.registerClass(
           return Clutter.EVENT_STOP;
         }
 
-        // 2b. Down arrow on web search item: stop
-        if (symbol === Clutter.KEY_Down && this._webSearchItem && currentFocus === this._webSearchItem) {
-          return Clutter.EVENT_STOP;
+        // 2b. Down arrow: navigate from bottom search result into web search item
+        if (symbol === Clutter.KEY_Down) {
+          if (this._webSearchItem && currentFocus === this._webSearchItem) {
+            return Clutter.EVENT_STOP;
+          }
+
+          if (this._webSearchItem?.visible) {
+            this._webSearchItem.grab_key_focus();
+            return Clutter.EVENT_STOP;
+          }
+        }
+
+        // 2c. Enter / Return or Space on web search item: execute web search
+        if (this._webSearchItem && currentFocus === this._webSearchItem) {
+          if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter || symbol === Clutter.KEY_space) {
+            const query = textActor.get_text()?.trim() || '';
+            this._openWebSearch(query);
+            return Clutter.EVENT_STOP;
+          }
         }
 
         // 2c. Backspace / Delete: immediately refocus search entry and edit

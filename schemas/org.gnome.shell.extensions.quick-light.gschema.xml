@@ -113,7 +113,7 @@
     <key type="i" name="web-search-mode">
       <default>0</default>
       <summary>Web search Enter key behavior</summary>
-      <description>0: Always search Google on Enter, 1: Search Google when no local app matches (Fallback), 2: Shift+Enter only</description>
+      <description>0: Search Google when no search result matches (Smart Fallback), 1: Search Google with Shift+Enter only, 2: Always search Google on Enter</description>
     </key>
     <key type="s" name="web-search-engine-url">
       <default>'https://www.google.com/search?q=%s'</default>
