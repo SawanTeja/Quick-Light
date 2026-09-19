@@ -23,6 +23,8 @@ export const QuickLightModal = GObject.registerClass(
         layout_manager: new Clutter.BinLayout(),
       });
 
+      this.set_pivot_point(0.5, 0.5);
+
       this._ext = extension;
       this._settings = extension.settings;
       this._monitorManager = extension.monitorManager;
@@ -37,12 +39,17 @@ export const QuickLightModal = GObject.registerClass(
         reactive: true,
         track_hover: true,
         can_focus: true,
+        x_expand: true,
+        y_expand: true,
+        x_align: Clutter.ActorAlign.FILL,
+        y_align: Clutter.ActorAlign.FILL,
       });
       this.add_child(this._box);
 
       // Search controller and entry references
       this._entry = null;
       this._entryParent = null;
+      this._entryAllocId = 0;
       this._searchController = null;
       this._searchParent = null;
       this._searchResults = null;
@@ -213,6 +220,30 @@ export const QuickLightModal = GObject.registerClass(
     }
 
     /**
+     * Compute exact natural height of the modal when collapsed to search entry.
+     */
+    _updateInitialHeight() {
+      const scaleFactor = St.ThemeContext.get_for_stage(global.stage).scale_factor || 1;
+
+      const scVisible = this._searchController?.visible;
+      const wsVisible = this._webSearchItem?.visible;
+      if (this._searchController) this._searchController.hide();
+      if (this._webSearchItem) this._webSearchItem.hide();
+
+      const [, modalNatHeight] = this.get_preferred_height(this._modalWidth);
+      if (modalNatHeight > 0) {
+        this._initialHeight = Math.round(modalNatHeight);
+      } else {
+        const [, entryNatHeight] = this._entry?.get_preferred_height(this._modalWidth) || [0, 48];
+        const baseHeight = entryNatHeight > 0 ? entryNatHeight : (this._entry?.height > 0 ? this._entry.height : 48);
+        this._initialHeight = Math.round(baseHeight + 20 * scaleFactor);
+      }
+
+      if (scVisible && this._searchController) this._searchController.show();
+      if (wsVisible && this._webSearchItem) this._webSearchItem.show();
+    }
+
+    /**
      * Calculate dimensions and position the modal on the designated monitor.
      */
     _layoutPosition() {
@@ -228,16 +259,14 @@ export const QuickLightModal = GObject.registerClass(
       this._modalWidth = Math.round(620 + (monitor.width / 2) * widthScale * scaleFactor);
       this._modalHeight = Math.round(440 + (monitor.height / 2) * heightScale * scaleFactor);
 
-      // Measure height of search entry
-      const entryHeight = (this._entry?.height > 0) ? this._entry.height : 48;
-      this._initialHeight = Math.round(entryHeight + 16 * scaleFactor);
+      // Measure height of search entry with exact preferred height
+      this._updateInitialHeight();
 
       const posX = Math.round(monitor.x + (monitor.width - this._modalWidth) / 2);
       const posY = Math.round(monitor.y + (monitor.height - this._modalHeight) / 3);
 
       this.set_position(posX, posY);
       this.set_size(this._modalWidth, this._initialHeight);
-      this._box.set_size(this._modalWidth, this._initialHeight);
     }
 
     /**
@@ -263,11 +292,24 @@ export const QuickLightModal = GObject.registerClass(
       if (this._entry) {
         this._entryParent = this._entry.get_parent();
         this._entry.add_style_class_name('quick-light-entry');
+        this._entry.x_expand = true;
+        this._entry.x_align = Clutter.ActorAlign.FILL;
+        this._entry.y_align = Clutter.ActorAlign.CENTER;
         if (this._entryParent) {
           this._entryParent.remove_child(this._entry);
         }
         this._box.add_child(this._entry);
         this._entry.show();
+
+        this._entryAllocId = this._entry.connect('notify::allocation', () => {
+          if (!this._searchController?.visible && this._isVisible) {
+            const [, natH] = this.get_preferred_height(this._modalWidth);
+            if (natH > 0 && Math.abs(natH - this.height) > 1) {
+              this._initialHeight = Math.round(natH);
+              this.set_size(this._modalWidth, this._initialHeight);
+            }
+          }
+        });
       }
 
       // Borrow searchController
@@ -384,7 +426,6 @@ export const QuickLightModal = GObject.registerClass(
 
               if (query.length > 0) {
                 this.set_size(this._modalWidth, this._modalHeight);
-                this._box.set_size(this._modalWidth, this._modalHeight);
                 this._searchController.show();
 
                 if (enableWeb) {
@@ -395,10 +436,10 @@ export const QuickLightModal = GObject.registerClass(
                   this._webSearchItem.hide();
                 }
               } else {
-                this.set_size(this._modalWidth, this._initialHeight);
-                this._box.set_size(this._modalWidth, this._initialHeight);
                 this._searchController.hide();
                 this._webSearchItem.hide();
+                this._updateInitialHeight();
+                this.set_size(this._modalWidth, this._initialHeight);
               }
             },
           );
@@ -448,6 +489,10 @@ export const QuickLightModal = GObject.registerClass(
       }
 
       if (this._entry) {
+        if (this._entryAllocId) {
+          this._entry.disconnect(this._entryAllocId);
+          this._entryAllocId = 0;
+        }
         this._entry.remove_style_class_name('quick-light-entry');
         this._entry.hide(); // Unmap before detaching to avoid Clutter 18 assertion!
         if (this._entry.get_parent() === this._box) {

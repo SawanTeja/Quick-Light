@@ -5,20 +5,20 @@
   background-color: rgba(26, 29, 36, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 16px;
-  padding: 8px;
+  padding: 10px;
 }
 
 #quickLightBox {
-  padding: 6px;
-  border-radius: 16px;
+  padding: 0;
+  border-radius: 14px;
 }
 
 /* Search Entry Box */
 #quickLightBox StEntry.quick-light-entry,
 #quickLightBox StEntry.quick-light-entry:focus {
-  padding: 12px 18px !important;
-  margin: 4px 4px 8px 4px !important;
-  border-radius: 12px !important;
+  padding: 12px 16px !important;
+  margin: 0 !important;
+  border-radius: 10px !important;
   border: 1px solid rgba(255, 255, 255, 0.08) !important;
   background-color: rgba(255, 255, 255, 0.06) !important;
   color: #f1f5f9 !important;
@@ -33,9 +33,9 @@
 /* Results section styling */
 #quickLightBox .search-section-content {
   background-color: rgba(0, 0, 0, 0.22) !important;
-  border-radius: 12px !important;
+  border-radius: 10px !important;
   padding: 6px !important;
-  margin: 4px !important;
+  margin: 8px 0 0 0 !important;
 }
 
 #quickLightBox .list-search-result,
