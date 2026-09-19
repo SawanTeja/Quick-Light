@@ -120,6 +120,11 @@
       <summary>Web search URL template</summary>
       <description>URL template with %s for the query parameter.</description>
     </key>
+    <key type="s" name="search-prefixes">
+      <default>'[{"prefix":"g","name":"Google","url":"https://www.google.com/search?q=%s"},{"prefix":"yt","name":"YouTube","url":"https://www.youtube.com/results?search_query=%s"},{"prefix":"gh","name":"GitHub","url":"https://github.com/search?q=%s"},{"prefix":"wiki","name":"Wikipedia","url":"https://en.wikipedia.org/wiki/Special:Search?search=%s"},{"prefix":"r","name":"Reddit","url":"https://www.reddit.com/search/?q=%s"},{"prefix":"so","name":"Stack Overflow","url":"https://stackoverflow.com/search?q=%s"},{"prefix":"ddg","name":"DuckDuckGo","url":"https://duckduckgo.com/?q=%s"}]'</default>
+      <summary>Custom search prefixes and web bangs</summary>
+      <description>JSON array of custom search prefix shortcuts and their target URL templates.</description>
+    </key>
 
   </schema>
 </schemalist>

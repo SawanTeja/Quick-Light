@@ -98,3 +98,89 @@
   color: #cbd5e1 !important;
 }
 
+/* Quick Preview Overlay & Card */
+.quick-light-preview-overlay {
+  background-color: rgba(10, 12, 16, 0.88);
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.quick-light-preview-card {
+  background-color: rgba(28, 32, 42, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+  padding: 14px;
+}
+
+.quick-light-preview-header {
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 10px;
+}
+
+.quick-light-preview-title {
+  font-weight: 600;
+  font-size: 11pt;
+  color: #f8fafc;
+}
+
+.quick-light-preview-meta {
+  font-size: 8.5pt;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+
+.quick-light-preview-close-btn {
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: #94a3b8;
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.quick-light-preview-close-btn:hover {
+  background-color: rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+
+.quick-light-preview-content-box {
+  background-color: rgba(15, 17, 23, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  min-height: 280px;
+  max-height: 380px;
+}
+
+.quick-light-preview-footer {
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.quick-light-preview-hint {
+  font-size: 8.5pt;
+  color: #94a3b8;
+}
+
+.quick-light-preview-key-badge {
+  font-size: 8pt;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: rgba(255, 255, 255, 0.12);
+  color: #f1f5f9;
+  margin-right: 6px;
+}
+
+/* Copy Toast Notification */
+.quick-light-toast {
+  background-color: rgba(16, 185, 129, 0.92);
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 9pt;
+  border-radius: 8px;
+  padding: 6px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+

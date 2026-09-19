@@ -1,10 +1,21 @@
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import Clutter from 'gi://Clutter';
+import GdkPixbuf from 'gi://GdkPixbuf';
 import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
 import GLib from 'gi://GLib';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
+
+const DEFAULT_SEARCH_PREFIXES = [
+  { prefix: 'g', name: 'Google', url: 'https://www.google.com/search?q=%s', icon: 'system-search-symbolic' },
+  { prefix: 'yt', name: 'YouTube', url: 'https://www.youtube.com/results?search_query=%s', icon: 'video-x-generic-symbolic' },
+  { prefix: 'gh', name: 'GitHub', url: 'https://github.com/search?q=%s', icon: 'software-properties-symbolic' },
+  { prefix: 'wiki', name: 'Wikipedia', url: 'https://en.wikipedia.org/wiki/Special:Search?search=%s', icon: 'accessories-dictionary-symbolic' },
+  { prefix: 'r', name: 'Reddit', url: 'https://www.reddit.com/search/?q=%s', icon: 'network-wired-symbolic' },
+  { prefix: 'so', name: 'Stack Overflow', url: 'https://stackoverflow.com/search?q=%s', icon: 'help-about-symbolic' },
+  { prefix: 'ddg', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s', icon: 'web-browser-symbolic' },
+];
 
 /**
  * QuickLightModal is the spotlight overlay container widget.
@@ -57,6 +68,8 @@ export const QuickLightModal = GObject.registerClass(
       this._searchResults = null;
       this._textChangedId = 0;
       this._textKeyPressId = 0;
+      this._entryKeyPressId = 0;
+      this._controllerKeyPressId = 0;
       this._resultsScrollId = 0;
       this._termsChangedId = 0;
 
@@ -70,6 +83,11 @@ export const QuickLightModal = GObject.registerClass(
       this._stageCaptureId = 0;
       this._windowCreatedId = 0;
       this._fullscreenId = 0;
+
+      // Quick Preview & Toast overlays
+      this._previewOverlay = null;
+      this._activePreviewFile = null;
+      this._toast = null;
 
       // Initial dimensions
       this._modalWidth = 620;
@@ -98,7 +116,7 @@ export const QuickLightModal = GObject.registerClass(
         y_align: Clutter.ActorAlign.CENTER,
       });
 
-      const webIcon = new St.Icon({
+      this._webSearchIcon = new St.Icon({
         icon_name: 'system-search-symbolic',
         style_class: 'quick-light-web-search-icon',
       });
@@ -115,13 +133,21 @@ export const QuickLightModal = GObject.registerClass(
         y_align: Clutter.ActorAlign.CENTER,
       });
 
-      webBox.add_child(webIcon);
+      webBox.add_child(this._webSearchIcon);
       webBox.add_child(this._webSearchLabel);
       webBox.add_child(this._webSearchBadge);
       this._webSearchItem.set_child(webBox);
 
       this._webSearchItem.connect('clicked', () => {
         const text = this._searchController?._text?.get_text() || '';
+        const enableWeb = this._settings?.get_boolean('enable-web-search');
+        if (enableWeb) {
+          const prefixInfo = this._parseSearchPrefix(text);
+          if (prefixInfo.matched && prefixInfo.query.length > 0) {
+            this._openWebSearch(prefixInfo.query, prefixInfo.engine.url);
+            return;
+          }
+        }
         this._openWebSearch(text.trim());
       });
 
@@ -132,6 +158,14 @@ export const QuickLightModal = GObject.registerClass(
 
         if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter || symbol === Clutter.KEY_space) {
           const text = this._searchController?._text?.get_text() || '';
+          const enableWeb = this._settings?.get_boolean('enable-web-search');
+          if (enableWeb) {
+            const prefixInfo = this._parseSearchPrefix(text);
+            if (prefixInfo.matched && prefixInfo.query.length > 0) {
+              this._openWebSearch(prefixInfo.query, prefixInfo.engine.url);
+              return Clutter.EVENT_STOP;
+            }
+          }
           this._openWebSearch(text.trim());
           return Clutter.EVENT_STOP;
         }
@@ -165,6 +199,24 @@ export const QuickLightModal = GObject.registerClass(
 
       const enableWeb = this._settings?.get_boolean('enable-web-search');
       if (!enableWeb) return;
+
+      const text = this._searchController?._text?.get_text() || '';
+      const prefixInfo = this._parseSearchPrefix(text);
+      if (prefixInfo.matched && prefixInfo.query.length > 0) {
+        this._webSearchBadge.set_text('↵ Enter');
+        return;
+      }
+
+      // Contextual action shortcuts when a file result is active
+      const fileResult = this._getSelectedFileResult();
+      if (fileResult) {
+        if (fileResult.isImage || fileResult.isPdf) {
+          this._webSearchBadge.set_text('↵ Open  •  ^↵ Preview  •  ^C Copy');
+        } else {
+          this._webSearchBadge.set_text('↵ Open  •  ^↵ Reveal  •  ^C Copy');
+        }
+        return;
+      }
 
       const mode = this._settings?.get_int('web-search-mode') ?? 0;
       const isItemFocused = this._webSearchItem?.has_key_focus();
@@ -343,10 +395,33 @@ export const QuickLightModal = GObject.registerClass(
       this.remove_all_transitions?.();
       this._disconnectEvents();
 
+      // Release key focus immediately
+      global.stage.set_key_focus(null);
+
+      // Cleanly clear search entry text and searchController state
+      if (this._entry) {
+        this._entry.text = '';
+      }
+      if (this._searchController) {
+        if (typeof this._searchController._origReset === 'function') {
+          this._searchController._origReset.call(this._searchController);
+        } else if (typeof this._searchController.reset === 'function') {
+          this._searchController.reset();
+        }
+      }
+
+      if (this._previewOverlay) {
+        this._previewOverlay.hide();
+        this._activePreviewFile = null;
+      }
+
       const useAnimations = this._settings.get_boolean('enable-animations');
       const duration = this._settings.get_double('animation-duration') || 120;
 
+      let finished = false;
       const finishClosing = () => {
+        if (finished) return;
+        finished = true;
         this.opacity = 0;
         this.hide();
         this._isVisible = false;
@@ -357,6 +432,12 @@ export const QuickLightModal = GObject.registerClass(
       };
 
       if (useAnimations) {
+        // Failsafe timer in case Clutter transition onComplete is dropped
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.round(duration) + 50, () => {
+          finishClosing();
+          return GLib.SOURCE_REMOVE;
+        });
+
         this.ease({
           opacity: 0,
           scale_x: 0.94,
@@ -455,6 +536,15 @@ export const QuickLightModal = GObject.registerClass(
             }
           }
         });
+
+        // Intercept Escape directly on the search entry
+        this._entryKeyPressId = this._entry.connect('key-press-event', (actor, event) => {
+          if (event.get_key_symbol() === Clutter.KEY_Escape) {
+            this.close();
+            return Clutter.EVENT_STOP;
+          }
+          return Clutter.EVENT_PROPAGATE;
+        });
       }
 
       // Borrow searchController
@@ -462,6 +552,37 @@ export const QuickLightModal = GObject.registerClass(
       if (this._searchController) {
         this._searchParent = this._searchController.get_parent();
         this._searchResults = this._searchController._searchResults;
+
+        // Intercept Escape via searchController.reset() and _onKeyPress
+        if (!this._searchController._origReset) {
+          this._searchController._origReset = this._searchController.reset;
+          this._searchController.reset = () => {
+            if (this._isVisible) {
+              this.close();
+              return;
+            }
+            this._searchController._origReset.call(this._searchController);
+          };
+        }
+
+        if (typeof this._searchController._onKeyPress === 'function' && !this._searchController._origOnKeyPress) {
+          this._searchController._origOnKeyPress = this._searchController._onKeyPress;
+          this._searchController._onKeyPress = (entry, event) => {
+            if (this._isVisible && event.get_key_symbol() === Clutter.KEY_Escape) {
+              this.close();
+              return Clutter.EVENT_STOP;
+            }
+            return this._searchController._origOnKeyPress.call(this._searchController, entry, event);
+          };
+        }
+
+        this._controllerKeyPressId = this._searchController.connect('key-press-event', (actor, event) => {
+          if (event.get_key_symbol() === Clutter.KEY_Escape) {
+            this.close();
+            return Clutter.EVENT_STOP;
+          }
+          return Clutter.EVENT_PROPAGATE;
+        });
 
         // Hook into result activation to dismiss modal instantly or perform smart web search fallback
         if (this._searchResults && !this._searchResults._origActivateDefault) {
@@ -472,21 +593,30 @@ export const QuickLightModal = GObject.registerClass(
             const enableWeb = this._settings.get_boolean('enable-web-search');
             const mode = this._settings.get_int('web-search-mode');
 
-            // Explicit web search mode 2 (Always search Google on Enter)
+            // 1. Search prefix intent takes highest priority on Enter (e.g. yt lofi, !gh asio)
+            if (enableWeb) {
+              const prefixInfo = this._parseSearchPrefix(text);
+              if (prefixInfo.matched && prefixInfo.query.length > 0) {
+                this._openWebSearch(prefixInfo.query, prefixInfo.engine.url);
+                return;
+              }
+            }
+
+            // 2. Explicit web search mode 2 (Always search Google on Enter)
             if (enableWeb && mode === 2 && query.length > 0) {
               this._openWebSearch(query);
               return;
             }
 
-            // Force search execution if debounced search is queued
-            if (this._searchResults._searchTimeoutId > 0) {
-              this._searchResults._doSearch();
-            }
-
-            // 1. If we already have a default result (e.g. Discord, Calc, Files):
-            if (this._searchResults._defaultResult) {
+            // 3. Immediately check for any currently highlighted, focused, or default result
+            const activeResult = this._findSelectedResult();
+            if (activeResult) {
               this.opacity = 0;
-              this._searchResults._origActivateDefault();
+              if (typeof activeResult.activate === 'function') {
+                activeResult.activate();
+              } else if (typeof this._searchResults._origActivateDefault === 'function') {
+                this._searchResults._origActivateDefault();
+              }
               GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
                 this.close();
                 return GLib.SOURCE_REMOVE;
@@ -494,39 +624,63 @@ export const QuickLightModal = GObject.registerClass(
               return;
             }
 
-            // 2. If default result is not yet rendered, check Shell.AppSystem synchronously
-            const appMatches = Shell.AppSystem.search(query);
-            let topAppId = null;
-            if (Array.isArray(appMatches)) {
-              for (const group of appMatches) {
-                if (Array.isArray(group) && group.length > 0) {
-                  topAppId = group[0];
-                  break;
+            // 4. Synchronous AppSystem search fallback: handles fast-typed app names (e.g. "Disc" -> Discord)
+            if (query.length > 0) {
+              const appSys = Shell.AppSystem.get_default();
+              if (appSys) {
+                const installed = appSys.get_installed() || [];
+                const q = query.toLowerCase();
+
+                // Exact name or exact id match
+                let matchedApp = installed.find(app => {
+                  const name = app.get_name()?.toLowerCase() || '';
+                  const id = app.get_id()?.toLowerCase() || '';
+                  return name === q || id === q || id === `${q}.desktop`;
+                });
+
+                // Prefix match (e.g. "disc" -> "Discord")
+                if (!matchedApp) {
+                  matchedApp = installed.find(app => {
+                    const name = app.get_name()?.toLowerCase() || '';
+                    const id = app.get_id()?.toLowerCase() || '';
+                    return name.startsWith(q) || id.startsWith(q);
+                  });
+                }
+
+                // Substring match
+                if (!matchedApp) {
+                  matchedApp = installed.find(app => {
+                    const name = app.get_name()?.toLowerCase() || '';
+                    const id = app.get_id()?.toLowerCase() || '';
+                    return name.includes(q) || id.includes(q);
+                  });
+                }
+
+                if (matchedApp) {
+                  this.opacity = 0;
+                  matchedApp.activate();
+                  GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    this.close();
+                    return GLib.SOURCE_REMOVE;
+                  });
+                  return;
                 }
               }
             }
 
-            if (topAppId) {
-              const app = Shell.AppSystem.get_default()?.lookup_app(topAppId);
-              if (app) {
-                this.opacity = 0;
-                app.activate();
-                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-                  this.close();
-                  return GLib.SOURCE_REMOVE;
-                });
-                return;
-              }
-            }
-
-            // 3. If asynchronous search providers are still running, wait briefly before fallback
+            // 5. If asynchronous search providers are still running, wait for results before fallback
             if (this._searchResults.searchInProgress) {
               let checkTicks = 0;
-              const checkId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 25, () => {
+              const checkId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 20, () => {
                 checkTicks++;
-                if (this._searchResults?._defaultResult) {
+                const res = this._findSelectedResult();
+                if (res) {
                   this.opacity = 0;
-                  this._searchResults._origActivateDefault();
+                  if (typeof res.activate === 'function') {
+                    res.activate();
+                  } else if (typeof this._searchResults?._origActivateDefault === 'function') {
+                    this._searchResults._origActivateDefault();
+                  }
                   GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
                     this.close();
                     return GLib.SOURCE_REMOVE;
@@ -534,10 +688,16 @@ export const QuickLightModal = GObject.registerClass(
                   return GLib.SOURCE_REMOVE;
                 }
 
-                if (!this._searchResults?.searchInProgress || checkTicks > 12) {
-                  if (this._searchResults?._defaultResult) {
+                // After up to 800ms or when search finishes
+                if (!this._searchResults?.searchInProgress || checkTicks > 40) {
+                  const finalRes = this._findSelectedResult();
+                  if (finalRes) {
                     this.opacity = 0;
-                    this._searchResults._origActivateDefault();
+                    if (typeof finalRes.activate === 'function') {
+                      finalRes.activate();
+                    } else if (typeof this._searchResults?._origActivateDefault === 'function') {
+                      this._searchResults._origActivateDefault();
+                    }
                     GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
                       this.close();
                       return GLib.SOURCE_REMOVE;
@@ -552,7 +712,7 @@ export const QuickLightModal = GObject.registerClass(
               return;
             }
 
-            // 4. No local results found: opt for Google search only on Smart Fallback (mode 0)
+            // 6. No local results found: opt for Google search only on Smart Fallback (mode 0)
             if (enableWeb && query.length > 0 && mode === 0) {
               this._openWebSearch(query);
             }
@@ -600,10 +760,42 @@ export const QuickLightModal = GObject.registerClass(
             'key-press-event',
             (actor, event) => {
               const symbol = event.get_key_symbol();
+              const state = event.get_state();
+              const isCtrl = (state & Clutter.ModifierType.CONTROL_MASK) !== 0;
+              const isShift = (state & Clutter.ModifierType.SHIFT_MASK) !== 0;
+
+              // If Quick Preview is open, handle its dismissal or activation
+              if (this._previewOverlay?.visible) {
+                if (symbol === Clutter.KEY_Escape || symbol === Clutter.KEY_space) {
+                  this._hideQuickPreview();
+                  return Clutter.EVENT_STOP;
+                }
+                if (isCtrl && (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter)) {
+                  this._hideQuickPreview();
+                  return Clutter.EVENT_STOP;
+                }
+                if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) {
+                  this._openActivePreviewFile();
+                  return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_STOP;
+              }
 
               if (symbol === Clutter.KEY_Escape) {
                 this.close();
                 return Clutter.EVENT_STOP;
+              }
+
+              // Ctrl+C: copy file path if a file result is active and no text in entry is selected
+              if (isCtrl && (symbol === Clutter.KEY_c || symbol === Clutter.KEY_C)) {
+                const hasSelection = actor.get_selection && actor.get_selection().length > 0;
+                if (!hasSelection) {
+                  const fileResult = this._getSelectedFileResult();
+                  if (fileResult) {
+                    this._copyFilePath(fileResult);
+                    return Clutter.EVENT_STOP;
+                  }
+                }
               }
 
               if (symbol === Clutter.KEY_Down) {
@@ -617,40 +809,64 @@ export const QuickLightModal = GObject.registerClass(
               const isEnter = (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter);
               if (!isEnter) return Clutter.EVENT_PROPAGATE;
 
-              const state = event.get_state();
-              const isShift = (state & Clutter.ModifierType.SHIFT_MASK) !== 0;
-              const isCtrl = (state & Clutter.ModifierType.CONTROL_MASK) !== 0;
+              // Ctrl+Enter on file result: Quick Preview (Image/PDF) or Reveal in Files
+              if (isCtrl) {
+                const fileResult = this._getSelectedFileResult();
+                if (fileResult) {
+                  if (fileResult.isImage || fileResult.isPdf) {
+                    this._showQuickPreview(fileResult);
+                  } else {
+                    this._revealInFileManager(fileResult.file);
+                  }
+                  return Clutter.EVENT_STOP;
+                }
+              }
 
               const text = this._searchController._text.get_text() || '';
               const query = text.trim();
               if (!query) return Clutter.EVENT_PROPAGATE;
 
               const enableWeb = this._settings.get_boolean('enable-web-search');
-              if (!enableWeb) return Clutter.EVENT_PROPAGATE;
-
               const mode = this._settings.get_int('web-search-mode');
 
-              // 1. Shift+Enter or Ctrl+Enter -> Always Google search
-              if (isShift || isCtrl) {
+              // 1. Shift+Enter -> Always web search
+              if (isShift && enableWeb) {
                 this._openWebSearch(query);
                 return Clutter.EVENT_STOP;
               }
 
-              // 2. Explicit 'g ' or '? ' prefix -> Always Google search
-              if (query.startsWith('g ') || query.startsWith('? ')) {
-                const cleaned = query.replace(/^(g|\?)\s+/, '');
-                this._openWebSearch(cleaned);
-                return Clutter.EVENT_STOP;
+              // 2. Search prefix intent (e.g. yt lofi, gh boost, !wiki distributed systems, etc.)
+              if (enableWeb) {
+                const prefixInfo = this._parseSearchPrefix(text);
+                if (prefixInfo.matched && prefixInfo.query.length > 0) {
+                  this._openWebSearch(prefixInfo.query, prefixInfo.engine.url);
+                  return Clutter.EVENT_STOP;
+                }
               }
 
               // 3. Mode 2: Always search Google on Enter
-              if (mode === 2) {
+              if (enableWeb && mode === 2) {
                 this._openWebSearch(query);
                 return Clutter.EVENT_STOP;
               }
 
-              // 4. Normal Enter in Smart Fallback (mode 0) or Shift+Enter only (mode 1):
-              // Propagate to activateDefault to handle local result activation or fallback
+              // 4. If an active or selected result is visible, activate it directly!
+              const activeResult = this._findSelectedResult();
+              if (activeResult) {
+                this.opacity = 0;
+                if (typeof activeResult.activate === 'function') {
+                  activeResult.activate();
+                } else if (typeof this._searchResults?._origActivateDefault === 'function') {
+                  this._searchResults._origActivateDefault();
+                }
+                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                  this.close();
+                  return GLib.SOURCE_REMOVE;
+                });
+                return Clutter.EVENT_STOP;
+              }
+
+              // Otherwise propagate to activateDefault to handle local result activation or fallback
               return Clutter.EVENT_PROPAGATE;
             },
           );
@@ -669,7 +885,23 @@ export const QuickLightModal = GObject.registerClass(
                 this._reorderSearchProviders(query);
 
                 if (enableWeb) {
-                  this._webSearchLabel.set_text(`Search Google for "${query}"`);
+                  const prefixInfo = this._parseSearchPrefix(text);
+                  if (prefixInfo.matched) {
+                    const engineName = prefixInfo.engine.name || 'Web';
+                    if (prefixInfo.query.length > 0) {
+                      this._webSearchLabel.set_text(`Search ${engineName} for "${prefixInfo.query}"`);
+                    } else {
+                      this._webSearchLabel.set_text(`Search ${engineName}…`);
+                    }
+                    if (this._webSearchIcon && prefixInfo.engine.icon) {
+                      this._webSearchIcon.set_icon_name(prefixInfo.engine.icon);
+                    }
+                  } else {
+                    this._webSearchLabel.set_text(`Search Google for "${query}"`);
+                    if (this._webSearchIcon) {
+                      this._webSearchIcon.set_icon_name('system-search-symbolic');
+                    }
+                  }
                   this._updateWebSearchBadge();
                   this._webSearchItem.show();
                 } else {
@@ -701,6 +933,21 @@ export const QuickLightModal = GObject.registerClass(
       if (this._textKeyPressId && this._searchController?._text) {
         this._searchController._text.disconnect(this._textKeyPressId);
         this._textKeyPressId = 0;
+      }
+
+      if (this._controllerKeyPressId && this._searchController) {
+        this._searchController.disconnect(this._controllerKeyPressId);
+        this._controllerKeyPressId = 0;
+      }
+
+      if (this._searchController?._origReset) {
+        this._searchController.reset = this._searchController._origReset;
+        delete this._searchController._origReset;
+      }
+
+      if (this._searchController?._origOnKeyPress) {
+        this._searchController._onKeyPress = this._searchController._origOnKeyPress;
+        delete this._searchController._origOnKeyPress;
       }
 
       if (this._webSearchItem) {
@@ -749,6 +996,10 @@ export const QuickLightModal = GObject.registerClass(
           this._entry.disconnect(this._entryAllocId);
           this._entryAllocId = 0;
         }
+        if (this._entryKeyPressId) {
+          this._entry.disconnect(this._entryKeyPressId);
+          this._entryKeyPressId = 0;
+        }
         this._entry.remove_style_class_name('quick-light-entry');
         this._entry.hide(); // Unmap before detaching to avoid Clutter 18 assertion!
         if (this._entry.get_parent() === this._box) {
@@ -766,15 +1017,131 @@ export const QuickLightModal = GObject.registerClass(
         Main.overview.toggle = Main.overview._origToggle;
         delete Main.overview._origToggle;
       }
+
+      if (this._previewOverlay) {
+        this._previewOverlay.hide();
+        if (this._previewOverlay.get_parent() === this) {
+          this.remove_child(this._previewOverlay);
+        }
+        this._previewOverlay = null;
+        this._activePreviewFile = null;
+      }
+
+      if (this._toast) {
+        this._toast.hide();
+        if (this._toast.get_parent() === this) {
+          this.remove_child(this._toast);
+        }
+        this._toast = null;
+      }
     }
 
     /**
-     * Launch Google search with query in the user's default browser.
+     * Retrieve configured search prefixes from GSettings or fallback to defaults.
+     * @returns {Array<{prefix: string, name: string, url: string, icon?: string}>}
      */
-    _openWebSearch(query) {
+    _getSearchPrefixes() {
+      try {
+        const jsonStr = this._settings?.get_string('search-prefixes');
+        if (jsonStr) {
+          const parsed = JSON.parse(jsonStr);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed;
+          }
+        }
+      } catch (e) {
+        console.warn(`[Quick Light] Failed to parse search-prefixes: ${e.message}`);
+      }
+      return DEFAULT_SEARCH_PREFIXES;
+    }
+
+    /**
+     * Parse input text for a search prefix (e.g. "yt lofi coding", "gh boost", "!wiki linux", "g query").
+     * @param {string} rawQuery
+     * @returns {{matched: boolean, engine: Object|null, query: string}}
+     */
+    _parseSearchPrefix(rawQuery) {
+      if (!rawQuery || typeof rawQuery !== 'string') {
+        return { matched: false, engine: null, query: '' };
+      }
+
+      const trimmed = rawQuery.trimStart();
+      if (!trimmed) {
+        return { matched: false, engine: null, query: '' };
+      }
+
+      const spaceIndex = trimmed.search(/\s/);
+      let token = '';
+      let query = '';
+      let hasSpace = false;
+
+      if (spaceIndex !== -1) {
+        hasSpace = true;
+        token = trimmed.substring(0, spaceIndex).trim();
+        query = trimmed.substring(spaceIndex).trim();
+      } else {
+        hasSpace = false;
+        token = trimmed;
+        query = '';
+      }
+
+      // If no space, only consider it a prefix intent if it starts with '!' or is '?'
+      if (!hasSpace && !token.startsWith('!') && token !== '?') {
+        return { matched: false, engine: null, query: '' };
+      }
+
+      const engines = this._getSearchPrefixes();
+      const lowerToken = token.toLowerCase();
+      const normToken = lowerToken.replace(/^!+/, '');
+
+      // Legacy/universal '?' shortcut
+      if (lowerToken === '?' || normToken === '?') {
+        const googleEngine = engines.find(
+          (e) => e.prefix.toLowerCase() === 'g' || e.prefix.toLowerCase() === '!g',
+        ) || {
+          prefix: 'g',
+          name: 'Google',
+          url: this._settings?.get_string('web-search-engine-url') || 'https://www.google.com/search?q=%s',
+          icon: 'system-search-symbolic',
+        };
+        return {
+          matched: true,
+          engine: googleEngine,
+          query,
+        };
+      }
+
+      for (const engine of engines) {
+        if (!engine.prefix) continue;
+        const lowerPrefix = engine.prefix.toLowerCase();
+        const normPrefix = lowerPrefix.replace(/^!+/, '');
+
+        if (
+          lowerToken === lowerPrefix ||
+          normToken === normPrefix ||
+          lowerToken === `!${normPrefix}` ||
+          `!${lowerToken}` === lowerPrefix
+        ) {
+          return {
+            matched: true,
+            engine,
+            query,
+          };
+        }
+      }
+
+      return { matched: false, engine: null, query: '' };
+    }
+
+    /**
+     * Launch web search with query in the user's default browser.
+     * @param {string} query - The search query
+     * @param {string} [customUrlTemplate] - Optional URL template containing %s
+     */
+    _openWebSearch(query, customUrlTemplate = null) {
       if (!query || !query.trim()) return;
 
-      const template = this._settings?.get_string('web-search-engine-url') || 'https://www.google.com/search?q=%s';
+      const template = customUrlTemplate || this._settings?.get_string('web-search-engine-url') || 'https://www.google.com/search?q=%s';
       const url = template.replace('%s', encodeURIComponent(query.trim()));
 
       this.opacity = 0;
@@ -792,6 +1159,602 @@ export const QuickLightModal = GObject.registerClass(
         }
         return GLib.SOURCE_REMOVE;
       });
+    }
+
+    /**
+     * Find currently selected or default result actor in the search results view.
+     */
+    _findSelectedResult() {
+      if (!this._searchResults) return null;
+
+      // 1. Check current keyboard focus on stage
+      const currentFocus = global.stage.get_key_focus();
+      if (currentFocus && this._searchResults.contains(currentFocus)) {
+        let actor = currentFocus;
+        while (actor && actor !== this._searchResults) {
+          if (typeof actor.activate === 'function') {
+            return actor;
+          }
+          actor = actor.get_parent();
+        }
+      }
+
+      // 2. Default result designated by search results view
+      if (this._searchResults._defaultResult) {
+        return this._searchResults._defaultResult;
+      }
+
+      // 3. Scan providers for any selected item or first visible result
+      const providers = this._searchResults._providerList ?? this._searchResults._providers;
+      if (Array.isArray(providers)) {
+        for (const provider of providers) {
+          const display = provider?.display;
+          if (!display || !display.visible) continue;
+
+          if (display._selected && typeof display._selected.activate === 'function') {
+            return display._selected;
+          }
+
+          if (display._content) {
+            for (const child of display._content) {
+              if (child.has_style_pseudo_class?.('selected') && typeof child.activate === 'function') {
+                return child;
+              }
+            }
+          }
+
+          if (display._grid) {
+            for (const child of display._grid) {
+              if (child.has_style_pseudo_class?.('selected') && typeof child.activate === 'function') {
+                return child;
+              }
+            }
+          }
+        }
+
+        // Check for the first result from the top visible provider (e.g. Applications)
+        for (const provider of providers) {
+          const display = provider?.display;
+          if (!display || !display.visible) continue;
+
+          if (typeof display.getFirstResult === 'function') {
+            const first = display.getFirstResult();
+            if (first && typeof first.activate === 'function') {
+              return first;
+            }
+          }
+        }
+      }
+
+      return null;
+    }
+
+    /**
+     * Get the active or focused file search result if one exists.
+     * @returns {{file: Gio.File, filePath: string, resultActor: Object, isImage: boolean, isPdf: boolean, name: string, size: number}|null}
+     */
+    _getSelectedFileResult() {
+      if (!this._searchResults) return null;
+
+      const currentFocus = global.stage.get_key_focus();
+      let candidate = null;
+
+      // 1. If keyboard focus is inside search results, find the containing SearchResult actor
+      if (currentFocus && this._searchResults.contains(currentFocus)) {
+        let actor = currentFocus;
+        while (actor && actor !== this._searchResults) {
+          if (actor.metaInfo || actor.provider) {
+            candidate = actor;
+            break;
+          }
+          actor = actor.get_parent();
+        }
+      }
+
+      // 2. Otherwise fallback to the default result
+      if (!candidate && this._searchResults._defaultResult) {
+        candidate = this._searchResults._defaultResult;
+      }
+
+      if (!candidate) return null;
+
+      return this._extractFileInfoFromResult(candidate);
+    }
+
+    /**
+     * Inspect a SearchResult actor and determine if it represents a local file.
+     * @param {Object} actor - The SearchResult actor
+     * @returns {Object|null}
+     */
+    _extractFileInfoFromResult(actor) {
+      if (!actor) return null;
+
+      const meta = actor.metaInfo;
+      const provider = actor.provider;
+      const provId = (provider?.id || provider?.appInfo?.get_id() || '').toLowerCase();
+
+      let uriOrPath = meta?.id || '';
+      if (!uriOrPath && typeof actor.getId === 'function') {
+        uriOrPath = actor.getId();
+      }
+
+      let file = null;
+      if (typeof uriOrPath === 'string') {
+        if (uriOrPath.startsWith('file://')) {
+          try { file = Gio.File.new_for_uri(uriOrPath); } catch (e) {}
+        } else if (uriOrPath.startsWith('/')) {
+          try { file = Gio.File.new_for_path(uriOrPath); } catch (e) {}
+        }
+      }
+
+      // If not yet found, check meta.description or fallback for Nautilus provider
+      if (!file && meta?.description) {
+        const desc = meta.description.trim();
+        if (desc.startsWith('/') || desc.startsWith('~')) {
+          const p = desc.startsWith('~') ? desc.replace(/^~/, GLib.get_home_dir()) : desc;
+          try {
+            const testFile = Gio.File.new_for_path(p);
+            if (testFile.query_exists(null)) file = testFile;
+          } catch (e) {}
+        }
+      }
+
+      if (!file && (provId.includes('nautilus') || provId.includes('files'))) {
+        try {
+          const testFile = Gio.File.new_for_commandline_arg(uriOrPath);
+          if (testFile.query_exists(null)) file = testFile;
+        } catch (e) {}
+      }
+
+      if (!file) return null;
+
+      try {
+        if (!file.query_exists(null)) return null;
+
+        const info = file.query_info(
+          'standard::content-type,standard::size,standard::display-name',
+          Gio.FileQueryInfoFlags.NONE,
+          null,
+        );
+
+        const filePath = file.get_path();
+        const contentType = info.get_content_type() || '';
+        const size = info.get_size() || 0;
+        const name = info.get_display_name() || file.get_basename();
+
+        const ext = (file.get_basename() || '').split('.').pop().toLowerCase();
+        const imageExtensions = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'ico', 'tiff', 'avif'];
+
+        const isImage = contentType.startsWith('image/') ||
+                        Gio.content_type_is_a(contentType, 'image/*') ||
+                        imageExtensions.includes(ext);
+
+        const isPdf = contentType === 'application/pdf' ||
+                      Gio.content_type_is_a(contentType, 'application/pdf') ||
+                      ext === 'pdf';
+
+        return {
+          file,
+          filePath,
+          resultActor: actor,
+          isImage,
+          isPdf,
+          name,
+          size,
+          contentType,
+        };
+      } catch (e) {
+        return null;
+      }
+    }
+
+    /**
+     * Copy the path of a file to system clipboard and show toast confirmation.
+     */
+    _copyFilePath(fileResult) {
+      if (!fileResult?.filePath) return;
+
+      St.Clipboard.get_default().set_text(
+        St.ClipboardType.CLIPBOARD,
+        fileResult.filePath,
+      );
+
+      this._showToast(`✓ Copied: ${fileResult.filePath}`);
+    }
+
+    /**
+     * Display a transient glassmorphic toast notification inside the modal.
+     */
+    _showToast(message) {
+      if (!this._toast) {
+        this._toast = new St.Label({
+          style_class: 'quick-light-toast',
+          y_align: Clutter.ActorAlign.CENTER,
+          x_align: Clutter.ActorAlign.CENTER,
+          opacity: 0,
+        });
+        this.add_child(this._toast);
+      }
+
+      this._toast.set_text(message);
+      this._toast.show();
+      this._toast.remove_all_transitions();
+
+      const toastWidth = Math.min(540, Math.max(160, message.length * 8 + 32));
+      this._toast.set_width(toastWidth);
+      this._toast.set_position(
+        Math.max(10, Math.floor((this.width - toastWidth) / 2)),
+        this.height - 48,
+      );
+
+      this._toast.ease({
+        opacity: 255,
+        duration: 150,
+        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+        onComplete: () => {
+          GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1600, () => {
+            if (this._toast && this._toast.visible) {
+              this._toast.ease({
+                opacity: 0,
+                duration: 250,
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                onComplete: () => {
+                  this._toast?.hide();
+                },
+              });
+            }
+            return GLib.SOURCE_REMOVE;
+          });
+        },
+      });
+    }
+
+    /**
+     * Reveal a file in Nautilus / GNOME Files.
+     */
+    _revealInFileManager(file) {
+      if (!file) return;
+
+      const uri = file.get_uri();
+      const filePath = file.get_path();
+
+      this.opacity = 0;
+      this.close();
+
+      GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        try {
+          const bus = Gio.DBus.session;
+          bus.call(
+            'org.freedesktop.FileManager1',
+            '/org/freedesktop/FileManager1',
+            'org.freedesktop.FileManager1',
+            'ShowItems',
+            new GLib.Variant('(ass)', [[uri], '']),
+            null,
+            Gio.DBusCallFlags.NONE,
+            -1,
+            null,
+            (connection, res) => {
+              try {
+                connection.call_finish(res);
+              } catch (e) {
+                try {
+                  GLib.spawn_command_line_async(`nautilus --select "${filePath}"`);
+                } catch (err) {
+                  console.warn(`[Quick Light] Error revealing file: ${err.message}`);
+                }
+              }
+            },
+          );
+        } catch (e) {
+          try {
+            GLib.spawn_command_line_async(`nautilus --select "${filePath}"`);
+          } catch (err) {
+            console.warn(`[Quick Light] Error revealing file: ${err.message}`);
+          }
+        }
+        return GLib.SOURCE_REMOVE;
+      });
+    }
+
+    /**
+     * Show Quick Preview overlay for Image or PDF files.
+     */
+    _showQuickPreview(fileResult) {
+      if (!fileResult) return;
+
+      if (!this._previewOverlay) {
+        this._previewOverlay = new St.Widget({
+          style_class: 'quick-light-preview-overlay',
+          layout_manager: new Clutter.BinLayout(),
+          reactive: true,
+          can_focus: true,
+          visible: false,
+          x_expand: true,
+          y_expand: true,
+        });
+
+        // Click outside card closes preview
+        this._previewOverlay.connect('button-press-event', (actor, event) => {
+          if (event.get_source() === this._previewOverlay) {
+            this._hideQuickPreview();
+            return Clutter.EVENT_STOP;
+          }
+          return Clutter.EVENT_PROPAGATE;
+        });
+
+        this.add_child(this._previewOverlay);
+      }
+
+      this._activePreviewFile = fileResult;
+      this._previewOverlay.destroy_all_children();
+
+      const card = new St.BoxLayout({
+        style_class: 'quick-light-preview-card',
+        orientation: Clutter.Orientation.VERTICAL,
+        x_align: Clutter.ActorAlign.FILL,
+        y_align: Clutter.ActorAlign.FILL,
+        x_expand: true,
+        y_expand: true,
+      });
+
+      // 1. Header
+      const headerBox = new St.BoxLayout({
+        style_class: 'quick-light-preview-header',
+        orientation: Clutter.Orientation.HORIZONTAL,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      const iconName = fileResult.isImage ? 'image-x-generic-symbolic' : 'application-pdf-symbolic';
+      const typeIcon = new St.Icon({
+        icon_name: iconName,
+        style_class: 'quick-light-web-search-icon',
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+      headerBox.add_child(typeIcon);
+
+      const titleVBox = new St.BoxLayout({
+        orientation: Clutter.Orientation.VERTICAL,
+        x_expand: true,
+        margin_left: 8,
+      });
+
+      const titleLabel = new St.Label({
+        text: fileResult.name || fileResult.file.get_basename(),
+        style_class: 'quick-light-preview-title',
+      });
+      titleVBox.add_child(titleLabel);
+
+      // Format metadata: size & dimensions
+      let metaText = this._formatFileSize(fileResult.size);
+      if (fileResult.isImage && fileResult.filePath) {
+        try {
+          const [info, w, h] = GdkPixbuf.Pixbuf.get_file_info(fileResult.filePath);
+          if (w && h) metaText += `  •  ${w} × ${h} px`;
+        } catch (e) {}
+      } else if (fileResult.isPdf) {
+        metaText += '  •  PDF Document';
+      }
+
+      const metaLabel = new St.Label({
+        text: metaText,
+        style_class: 'quick-light-preview-meta',
+      });
+      titleVBox.add_child(metaLabel);
+      headerBox.add_child(titleVBox);
+
+      const closeBtn = new St.Button({
+        style_class: 'quick-light-preview-close-btn',
+        child: new St.Icon({
+          icon_name: 'window-close-symbolic',
+          icon_size: 14,
+        }),
+        can_focus: true,
+      });
+      closeBtn.connect('clicked', () => this._hideQuickPreview());
+      headerBox.add_child(closeBtn);
+
+      card.add_child(headerBox);
+
+      // 2. Image / Preview Viewport
+      const contentBox = new St.Bin({
+        style_class: 'quick-light-preview-content-box',
+        x_expand: true,
+        y_expand: true,
+        x_align: Clutter.ActorAlign.FILL,
+        y_align: Clutter.ActorAlign.FILL,
+      });
+
+      if (fileResult.isImage) {
+        contentBox.style = `
+          background-image: url("${fileResult.filePath}");
+          background-size: contain;
+          background-repeat: no-repeat;
+          background-position: center;
+        `;
+      } else if (fileResult.isPdf) {
+        const previewPath = this._getPdfPreviewPath(fileResult);
+        if (previewPath) {
+          contentBox.style = `
+            background-image: url("${previewPath}");
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+          `;
+        } else {
+          this._generatePdfPreview(fileResult, (generatedPath) => {
+            if (this._activePreviewFile === fileResult && contentBox) {
+              contentBox.style = `
+                background-image: url("${generatedPath}");
+                background-size: contain;
+                background-repeat: no-repeat;
+                background-position: center;
+              `;
+            }
+          });
+        }
+      }
+
+      card.add_child(contentBox);
+
+      // 3. Footer with shortcut hints
+      const footerBox = new St.BoxLayout({
+        style_class: 'quick-light-preview-footer',
+        orientation: Clutter.Orientation.HORIZONTAL,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      const enterBadge = new St.Label({
+        text: '↵ Enter',
+        style_class: 'quick-light-preview-key-badge',
+      });
+      const enterHint = new St.Label({
+        text: 'Open File   ',
+        style_class: 'quick-light-preview-hint',
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      const escBadge = new St.Label({
+        text: 'Esc / Space',
+        style_class: 'quick-light-preview-key-badge',
+      });
+      const escHint = new St.Label({
+        text: 'Close Preview',
+        style_class: 'quick-light-preview-hint',
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      footerBox.add_child(enterBadge);
+      footerBox.add_child(enterHint);
+      footerBox.add_child(escBadge);
+      footerBox.add_child(escHint);
+
+      card.add_child(footerBox);
+      this._previewOverlay.set_child(card);
+
+      // Animate opening
+      this._previewOverlay.show();
+      this._previewOverlay.opacity = 0;
+      this._previewOverlay.set_scale(0.94, 0.94);
+      this._previewOverlay.set_pivot_point(0.5, 0.5);
+
+      this._previewOverlay.ease({
+        opacity: 255,
+        scale_x: 1.0,
+        scale_y: 1.0,
+        duration: 200,
+        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+      });
+
+      this._previewOverlay.grab_key_focus();
+    }
+
+    _hideQuickPreview() {
+      if (!this._previewOverlay || !this._previewOverlay.visible) return;
+
+      this._previewOverlay.remove_all_transitions();
+      this._previewOverlay.ease({
+        opacity: 0,
+        scale_x: 0.95,
+        scale_y: 0.95,
+        duration: 150,
+        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+        onComplete: () => {
+          this._previewOverlay.hide();
+          this._activePreviewFile = null;
+          this._grabSearchFocus();
+        },
+      });
+    }
+
+    _openActivePreviewFile() {
+      if (!this._activePreviewFile) return;
+
+      const fileObj = this._activePreviewFile;
+      this.opacity = 0;
+      this.close();
+
+      GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        try {
+          if (fileObj.resultActor && typeof fileObj.resultActor.activate === 'function') {
+            fileObj.resultActor.activate();
+          } else if (fileObj.file) {
+            Gio.AppInfo.launch_default_for_uri(fileObj.file.get_uri(), null);
+          }
+        } catch (e) {
+          try {
+            GLib.spawn_command_line_async(`xdg-open "${fileObj.filePath}"`);
+          } catch (err) {
+            console.warn(`[Quick Light] Error opening file: ${err.message}`);
+          }
+        }
+        return GLib.SOURCE_REMOVE;
+      });
+    }
+
+    _formatFileSize(bytes) {
+      if (!bytes || bytes <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let i = 0;
+      let val = bytes;
+      while (val >= 1024 && i < units.length - 1) {
+        val /= 1024;
+        i++;
+      }
+      return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+    }
+
+    _getPdfPreviewPath(fileResult) {
+      const uri = fileResult.file.get_uri();
+      const md5 = GLib.compute_checksum_for_string(GLib.ChecksumType.MD5, uri, -1);
+      const home = GLib.get_home_dir();
+
+      const candidatePaths = [
+        `${home}/.cache/thumbnails/large/${md5}.png`,
+        `${home}/.cache/thumbnails/normal/${md5}.png`,
+        `/tmp/ql_pdf_${md5}-1.png`,
+        `/tmp/ql_pdf_${md5}-01.png`,
+      ];
+
+      for (const p of candidatePaths) {
+        if (GLib.file_test(p, GLib.FileTest.EXISTS)) {
+          return p;
+        }
+      }
+      return null;
+    }
+
+    _generatePdfPreview(fileResult, callback) {
+      const uri = fileResult.file.get_uri();
+      const md5 = GLib.compute_checksum_for_string(GLib.ChecksumType.MD5, uri, -1);
+      const outPrefix = `/tmp/ql_pdf_${md5}`;
+      const expectedFile = `${outPrefix}-1.png`;
+      const altFile = `${outPrefix}-01.png`;
+
+      const cmd = `pdftoppm -png -f 1 -l 1 -scale-to 600 "${fileResult.filePath}" "${outPrefix}"`;
+
+      try {
+        GLib.spawn_command_line_async(cmd);
+
+        let ticks = 0;
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
+          ticks++;
+          if (GLib.file_test(expectedFile, GLib.FileTest.EXISTS)) {
+            callback(expectedFile);
+            return GLib.SOURCE_REMOVE;
+          }
+          if (GLib.file_test(altFile, GLib.FileTest.EXISTS)) {
+            callback(altFile);
+            return GLib.SOURCE_REMOVE;
+          }
+          if (ticks > 25) {
+            return GLib.SOURCE_REMOVE;
+          }
+          return GLib.SOURCE_CONTINUE;
+        });
+      } catch (e) {
+        console.warn(`[Quick Light] Failed to generate PDF preview: ${e.message}`);
+      }
     }
 
     /**
@@ -977,6 +1940,26 @@ export const QuickLightModal = GObject.registerClass(
       if (!this._isVisible) return Clutter.EVENT_PROPAGATE;
 
       const symbol = event.get_key_symbol();
+      const state = event.get_state();
+      const isCtrl = (state & Clutter.ModifierType.CONTROL_MASK) !== 0;
+      const isShift = (state & Clutter.ModifierType.SHIFT_MASK) !== 0;
+
+      // Handle active Quick Preview overlay keys
+      if (this._previewOverlay?.visible) {
+        if (symbol === Clutter.KEY_Escape || symbol === Clutter.KEY_space) {
+          this._hideQuickPreview();
+          return Clutter.EVENT_STOP;
+        }
+        if (isCtrl && (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter)) {
+          this._hideQuickPreview();
+          return Clutter.EVENT_STOP;
+        }
+        if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) {
+          this._openActivePreviewFile();
+          return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_STOP;
+      }
 
       // 1. Escape: close the modal
       if (symbol === Clutter.KEY_Escape) {
@@ -990,12 +1973,51 @@ export const QuickLightModal = GObject.registerClass(
 
       // 2. If focus is NOT on the search entry (e.g. user pressed Down arrow into search results):
       if (!isEntryFocused && textActor) {
-        const state = event.get_state();
         const hasModifier = (state & (
           Clutter.ModifierType.CONTROL_MASK |
           Clutter.ModifierType.MOD1_MASK |
           Clutter.ModifierType.SUPER_MASK
         )) !== 0;
+
+        // Ctrl+C: copy file path from focused search result
+        if (isCtrl && (symbol === Clutter.KEY_c || symbol === Clutter.KEY_C)) {
+          const fileResult = this._getSelectedFileResult();
+          if (fileResult) {
+            this._copyFilePath(fileResult);
+            return Clutter.EVENT_STOP;
+          }
+        }
+
+        // Ctrl+Enter on focused file result: Quick Preview (Image/PDF) or Reveal
+        if (isCtrl && (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter)) {
+          const fileResult = this._getSelectedFileResult();
+          if (fileResult) {
+            if (fileResult.isImage || fileResult.isPdf) {
+              this._showQuickPreview(fileResult);
+            } else {
+              this._revealInFileManager(fileResult.file);
+            }
+            return Clutter.EVENT_STOP;
+          }
+        }
+
+        // Return / Enter on focused search result: activate it and close modal
+        if ((symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) && !isCtrl && currentFocus !== this._webSearchItem) {
+          const activeResult = this._findSelectedResult();
+          if (activeResult) {
+            this.opacity = 0;
+            if (typeof activeResult.activate === 'function') {
+              activeResult.activate();
+            } else if (typeof this._searchResults?._origActivateDefault === 'function') {
+              this._searchResults._origActivateDefault();
+            }
+            GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+              this.close();
+              return GLib.SOURCE_REMOVE;
+            });
+            return Clutter.EVENT_STOP;
+          }
+        }
 
         // 2a. Up arrow: return to search entry when at the top result or from web search item
         if (symbol === Clutter.KEY_Up) {
@@ -1040,8 +2062,13 @@ export const QuickLightModal = GObject.registerClass(
         // 2c. Enter / Return or Space on web search item: execute web search
         if (this._webSearchItem && currentFocus === this._webSearchItem) {
           if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter || symbol === Clutter.KEY_space) {
-            const query = textActor.get_text()?.trim() || '';
-            this._openWebSearch(query);
+            const rawText = textActor.get_text() || '';
+            const prefixInfo = this._parseSearchPrefix(rawText);
+            if (prefixInfo.matched && prefixInfo.query.length > 0) {
+              this._openWebSearch(prefixInfo.query, prefixInfo.engine.url);
+            } else {
+              this._openWebSearch(rawText.trim());
+            }
             return Clutter.EVENT_STOP;
           }
         }

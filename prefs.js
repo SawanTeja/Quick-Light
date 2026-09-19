@@ -7,6 +7,16 @@ import GLib from 'gi://GLib';
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 import { ShortcutWidget } from './shortcuts.js';
 
+const DEFAULT_SEARCH_PREFIXES = [
+  { prefix: 'g', name: 'Google', url: 'https://www.google.com/search?q=%s', icon: 'system-search-symbolic' },
+  { prefix: 'yt', name: 'YouTube', url: 'https://www.youtube.com/results?search_query=%s', icon: 'video-x-generic-symbolic' },
+  { prefix: 'gh', name: 'GitHub', url: 'https://github.com/search?q=%s', icon: 'software-properties-symbolic' },
+  { prefix: 'wiki', name: 'Wikipedia', url: 'https://en.wikipedia.org/wiki/Special:Search?search=%s', icon: 'accessories-dictionary-symbolic' },
+  { prefix: 'r', name: 'Reddit', url: 'https://www.reddit.com/search/?q=%s', icon: 'network-wired-symbolic' },
+  { prefix: 'so', name: 'Stack Overflow', url: 'https://stackoverflow.com/search?q=%s', icon: 'help-about-symbolic' },
+  { prefix: 'ddg', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s', icon: 'web-browser-symbolic' },
+];
+
 /**
  * Modern Libadwaita Preferences Window for Quick Light.
  */
@@ -105,28 +115,37 @@ export default class QuickLightPreferences extends ExtensionPreferences {
     panelGroup.add(panelRow);
 
     generalPage.add(panelGroup);
+    window.add(generalPage);
 
-    // Google Web Search Group
+    // ==========================================
+    // PAGE 2: Search Prefixes and Web Search
+    // ==========================================
+    const searchPage = new Adw.PreferencesPage({
+      title: _('Search Prefixes'),
+      icon_name: 'system-search-symbolic',
+    });
+
+    // Web Search Integration Group
     const webSearchGroup = new Adw.PreferencesGroup({
-      title: _('Google Web Search'),
+      title: _('Web Search Integration'),
       description: _('Search keywords in your default browser directly from Quick Light.'),
     });
 
     const webSearchEnableRow = new Adw.SwitchRow({
-      title: _('Enable Google Web Search'),
-      subtitle: _('Search keywords on Google in your default browser'),
+      title: _('Enable Web Search and Prefixes'),
+      subtitle: _('Search the web from Quick Light using keywords and custom prefixes'),
     });
     settings.bind('enable-web-search', webSearchEnableRow, 'active', Gio.SettingsBindFlags.DEFAULT);
     webSearchGroup.add(webSearchEnableRow);
 
     const webSearchModeRow = new Adw.ComboRow({
-      title: _('Enter Key Action'),
-      subtitle: _('Choose what happens when pressing Enter in search'),
+      title: _('Default Enter Key Action'),
+      subtitle: _('Choose what happens when pressing Enter without a search prefix'),
     });
     const webSearchModes = new Gtk.StringList();
-    webSearchModes.append(_('Search Google if no search result matches (Smart Fallback)'));
-    webSearchModes.append(_('Search Google with Shift + Enter only'));
-    webSearchModes.append(_('Always search Google on Enter'));
+    webSearchModes.append(_('Search default engine if no search result matches (Smart Fallback)'));
+    webSearchModes.append(_('Search default engine with Shift + Enter only'));
+    webSearchModes.append(_('Always search default engine on Enter'));
     webSearchModeRow.set_model(webSearchModes);
 
     const initialMode = settings.get_int('web-search-mode');
@@ -137,7 +156,7 @@ export default class QuickLightPreferences extends ExtensionPreferences {
     webSearchGroup.add(webSearchModeRow);
 
     const engineUrlRow = new Adw.EntryRow({
-      title: _('Search Engine URL Template'),
+      title: _('Default Search Engine URL Template'),
       text: settings.get_string('web-search-engine-url') || 'https://www.google.com/search?q=%s',
     });
     engineUrlRow.connect('changed', () => {
@@ -147,12 +166,168 @@ export default class QuickLightPreferences extends ExtensionPreferences {
       }
     });
     webSearchGroup.add(engineUrlRow);
+    searchPage.add(webSearchGroup);
 
-    generalPage.add(webSearchGroup);
-    window.add(generalPage);
+    // Search Prefixes & Bangs Group
+    const prefixesGroup = new Adw.PreferencesGroup({
+      title: _('Search Prefixes and Bangs'),
+      description: _('Type a prefix before your query (e.g. "yt lofi", "gh boost", "!wiki linux") to search directly.'),
+    });
+
+    const addExpander = new Adw.ExpanderRow({
+      title: _('Add Custom Search Prefix'),
+      subtitle: _('Configure a keyword like "!yt", "wiki", or "mdn" and its search URL'),
+      icon_name: 'list-add-symbolic',
+      expanded: false,
+    });
+
+    const prefixInputRow = new Adw.EntryRow({
+      title: _('Prefix keyword (e.g. mdn, !yt, gh)'),
+    });
+    addExpander.add_row(prefixInputRow);
+
+    const nameInputRow = new Adw.EntryRow({
+      title: _('Engine Name (e.g. MDN Web Docs)'),
+    });
+    addExpander.add_row(nameInputRow);
+
+    const urlInputRow = new Adw.EntryRow({
+      title: _('Search URL Template (must include %s)'),
+    });
+    addExpander.add_row(urlInputRow);
+
+    const addActionRow = new Adw.ActionRow();
+    const addBtn = new Gtk.Button({
+      label: _('Add Prefix'),
+      css_classes: ['suggested-action'],
+      valign: Gtk.Align.CENTER,
+    });
+    addActionRow.add_suffix(addBtn);
+    addExpander.add_row(addActionRow);
+    prefixesGroup.add(addExpander);
+    searchPage.add(prefixesGroup);
+
+    const prefixListGroup = new Adw.PreferencesGroup({
+      title: _('Configured Prefixes'),
+    });
+
+    const getPrefixes = () => {
+      try {
+        const raw = settings.get_string('search-prefixes');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch (e) {
+        console.warn(`[Quick Light] Error parsing search-prefixes: ${e.message}`);
+      }
+      return DEFAULT_SEARCH_PREFIXES;
+    };
+
+    const savePrefixes = (list) => {
+      settings.set_string('search-prefixes', JSON.stringify(list));
+    };
+
+    let activePrefixRows = [];
+
+    const rebuildPrefixRows = () => {
+      for (const row of activePrefixRows) {
+        prefixListGroup.remove(row);
+      }
+      activePrefixRows = [];
+
+      const currentPrefixes = getPrefixes();
+      for (let i = 0; i < currentPrefixes.length; i++) {
+        const item = currentPrefixes[i];
+        const row = new Adw.ActionRow({
+          title: item.name || item.prefix,
+          subtitle: item.url,
+        });
+
+        const badgeText = item.prefix.startsWith('!')
+          ? item.prefix
+          : `${item.prefix} / !${item.prefix}`;
+        const badge = new Gtk.Label({
+          label: badgeText,
+          css_classes: ['heading', 'tag', 'dim-label'],
+          valign: Gtk.Align.CENTER,
+        });
+        row.add_prefix(badge);
+
+        const delBtn = new Gtk.Button({
+          icon_name: 'user-trash-symbolic',
+          valign: Gtk.Align.CENTER,
+          has_frame: false,
+          tooltip_text: _('Delete this prefix'),
+          css_classes: ['flat', 'circular'],
+        });
+
+        const indexToDelete = i;
+        delBtn.connect('clicked', () => {
+          const list = getPrefixes();
+          list.splice(indexToDelete, 1);
+          savePrefixes(list);
+          rebuildPrefixRows();
+        });
+        row.add_suffix(delBtn);
+
+        prefixListGroup.add(row);
+        activePrefixRows.push(row);
+      }
+    };
+
+    addBtn.connect('clicked', () => {
+      const prefix = prefixInputRow.get_text()?.trim();
+      const name = nameInputRow.get_text()?.trim() || prefix;
+      const url = urlInputRow.get_text()?.trim();
+
+      if (!prefix || !url || !url.includes('%s')) {
+        return;
+      }
+
+      const list = getPrefixes();
+      const filtered = list.filter(
+        (p) => p.prefix.toLowerCase() !== prefix.toLowerCase(),
+      );
+      filtered.push({
+        prefix,
+        name,
+        url,
+        icon: 'system-search-symbolic',
+      });
+
+      savePrefixes(filtered);
+      prefixInputRow.set_text('');
+      nameInputRow.set_text('');
+      urlInputRow.set_text('');
+      addExpander.set_expanded(false);
+      rebuildPrefixRows();
+    });
+
+    rebuildPrefixRows();
+    searchPage.add(prefixListGroup);
+
+    const resetGroup = new Adw.PreferencesGroup();
+    const resetRow = new Adw.ActionRow({
+      title: _('Reset Built-in Prefixes'),
+      subtitle: _('Restore Google (g), YouTube (yt), GitHub (gh), Wikipedia (wiki), Reddit (r), Stack Overflow (so), DuckDuckGo (ddg)'),
+    });
+    const resetBtn = new Gtk.Button({
+      label: _('Reset to Defaults'),
+      valign: Gtk.Align.CENTER,
+    });
+    resetBtn.connect('clicked', () => {
+      settings.reset('search-prefixes');
+      rebuildPrefixRows();
+    });
+    resetRow.add_suffix(resetBtn);
+    resetGroup.add(resetRow);
+    searchPage.add(resetGroup);
+
+    window.add(searchPage);
 
     // ==========================================
-    // PAGE 2: Appearance (Framing, Colors, Fonts)
+    // PAGE 3: Appearance (Framing, Colors, Fonts)
     // ==========================================
     const appearancePage = new Adw.PreferencesPage({
       title: _('Appearance'),
@@ -316,7 +491,7 @@ export default class QuickLightPreferences extends ExtensionPreferences {
     window.add(appearancePage);
 
     // ==========================================
-    // PAGE 3: Behavior & Animations
+    // PAGE 4: Behavior & Animations
     // ==========================================
     const behaviorPage = new Adw.PreferencesPage({
       title: _('Behavior'),
@@ -352,7 +527,7 @@ export default class QuickLightPreferences extends ExtensionPreferences {
     window.add(behaviorPage);
 
     // ==========================================
-    // PAGE 4: About
+    // PAGE 5: About
     // ==========================================
     const aboutPage = new Adw.PreferencesPage({
       title: _('About'),
