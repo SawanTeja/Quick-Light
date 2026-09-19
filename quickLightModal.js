@@ -366,6 +366,14 @@ export const QuickLightModal = GObject.registerClass(
             'key-press-event',
             (actor, event) => {
               const symbol = event.get_key_symbol();
+
+              if (symbol === Clutter.KEY_Down) {
+                if (!this._searchResults?._defaultResult && this._webSearchItem?.visible) {
+                  this._webSearchItem.grab_key_focus();
+                  return Clutter.EVENT_STOP;
+                }
+              }
+
               const isEnter = (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter);
               if (!isEnter) return Clutter.EVENT_PROPAGATE;
 
@@ -543,8 +551,9 @@ export const QuickLightModal = GObject.registerClass(
      */
     _grabSearchFocus() {
       if (!this._entry) return;
-      if (this._searchController?._text?.get_parent()) {
-        this._searchController._text.get_parent().grab_key_focus();
+      if (this._searchController?._text) {
+        this._searchController._text.grab_key_focus();
+        this._searchController._text.set_cursor_visible(true);
       } else {
         this._entry.grab_key_focus();
       }
@@ -562,7 +571,7 @@ export const QuickLightModal = GObject.registerClass(
         this._onKeyFocusChanged.bind(this),
       );
 
-      // Intercept key presses (Escape to dismiss)
+      // Intercept key presses (Escape to dismiss, typing & navigation while browsing results)
       this._stageKeyPressId = global.stage.connect(
         'key-press-event',
         this._onStageKeyPressed.bind(this),
@@ -623,32 +632,135 @@ export const QuickLightModal = GObject.registerClass(
       if (!this._isVisible || !this._entry) return;
 
       const focus = global.stage.get_key_focus();
-      const hasFocus = focus && (this._entry.contains(focus) || this._searchResults?.contains(focus));
+      const hasFocus = focus && (
+        this.contains(focus) ||
+        this._entry?.contains(focus) ||
+        this._searchResults?.contains(focus) ||
+        this._webSearchItem?.contains(focus)
+      );
 
       if (!hasFocus) {
         GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-          this.close();
+          if (this._isVisible) {
+            const currentFocus = global.stage.get_key_focus();
+            const stillHasFocus = currentFocus && (
+              this.contains(currentFocus) ||
+              this._entry?.contains(currentFocus) ||
+              this._searchResults?.contains(currentFocus) ||
+              this._webSearchItem?.contains(currentFocus)
+            );
+            if (!stillHasFocus) {
+              this.close();
+            }
+          }
           return GLib.SOURCE_REMOVE;
         });
       }
     }
 
     /**
-     * Stage key press handler: Escape closes the modal.
+     * Global stage key press handler for Quick Light:
+     * - Escape to dismiss
+     * - Seamless editing: Any typing, Backspace, or Delete while browsing search results redirects
+     *   immediately to the search entry so the user can always edit the search query.
+     * - Up Arrow returns from the top search result back into the search entry.
      */
     _onStageKeyPressed(actor, event) {
-      if (!this._isVisible) return St.CLUTTER_EVENT_PROPAGATE ?? 0;
+      if (!this._isVisible) return Clutter.EVENT_PROPAGATE;
 
       const symbol = event.get_key_symbol();
+
+      // 1. Escape: close the modal
       if (symbol === Clutter.KEY_Escape) {
         GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
           this.close();
           return GLib.SOURCE_REMOVE;
         });
-        return St.CLUTTER_EVENT_STOP ?? 1;
+        return Clutter.EVENT_STOP;
       }
 
-      return St.CLUTTER_EVENT_PROPAGATE ?? 0;
+      const textActor = this._searchController?._text;
+      const currentFocus = global.stage.get_key_focus();
+      const isEntryFocused = textActor && (currentFocus === textActor || this._entry.contains(currentFocus));
+
+      // 2. If focus is NOT on the search entry (e.g. user pressed Down arrow into search results):
+      if (!isEntryFocused && textActor) {
+        const state = event.get_state();
+        const hasModifier = (state & (
+          Clutter.ModifierType.CONTROL_MASK |
+          Clutter.ModifierType.MOD1_MASK |
+          Clutter.ModifierType.SUPER_MASK
+        )) !== 0;
+
+        // 2a. Up arrow: return to search entry when at the top result or from web search item
+        if (symbol === Clutter.KEY_Up) {
+          let canGoUp = false;
+
+          if (this._webSearchItem && currentFocus === this._webSearchItem) {
+            // From web search item, go back into search results or entry
+            if (this._searchResults?._defaultResult) {
+              this._searchResults.navigateFocus(St.DirectionType.TAB_BACKWARD);
+              return Clutter.EVENT_STOP;
+            }
+          } else if (this._searchResults && currentFocus && this._searchResults.contains(currentFocus)) {
+            // If focused on the first/default result, we cannot go higher in results
+            if (this._searchResults._defaultResult && currentFocus === this._searchResults._defaultResult) {
+              canGoUp = false;
+            } else {
+              canGoUp = this._searchResults.navigateFocus(St.DirectionType.UP);
+            }
+          }
+
+          if (!canGoUp) {
+            this._grabSearchFocus();
+            textActor.set_cursor_position(-1);
+            textActor.set_selection(-1, -1);
+            return Clutter.EVENT_STOP;
+          }
+          return Clutter.EVENT_STOP;
+        }
+
+        // 2b. Down arrow on web search item: stop
+        if (symbol === Clutter.KEY_Down && this._webSearchItem && currentFocus === this._webSearchItem) {
+          return Clutter.EVENT_STOP;
+        }
+
+        // 2c. Backspace / Delete: immediately refocus search entry and edit
+        if ((symbol === Clutter.KEY_BackSpace || symbol === Clutter.KEY_Delete) && !hasModifier) {
+          textActor.grab_key_focus();
+          textActor.set_cursor_visible(true);
+          textActor.set_cursor_position(-1);
+          textActor.set_selection(-1, -1);
+
+          if (typeof this._searchController.startSearch === 'function') {
+            this._searchController.startSearch(event);
+          } else {
+            textActor.event(event, false);
+          }
+          return Clutter.EVENT_STOP;
+        }
+
+        // 2d. Any printable text input (letters, numbers, punctuation, space):
+        // Automatically refocus search entry and append/type character so editing is continuous!
+        const unicode = Clutter.keysym_to_unicode(symbol);
+        const isPrintable = (unicode !== 0 && unicode >= 32);
+
+        if (isPrintable && !hasModifier) {
+          textActor.grab_key_focus();
+          textActor.set_cursor_visible(true);
+          textActor.set_cursor_position(-1);
+          textActor.set_selection(-1, -1);
+
+          if (typeof this._searchController.startSearch === 'function') {
+            this._searchController.startSearch(event);
+          } else {
+            textActor.event(event, false);
+          }
+          return Clutter.EVENT_STOP;
+        }
+      }
+
+      return Clutter.EVENT_PROPAGATE;
     }
 
     /**
