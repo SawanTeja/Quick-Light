@@ -578,7 +578,14 @@ export default class QuickLightPreferences extends ExtensionPreferences {
       has_frame: false,
     });
     sourceBtn.connect('clicked', () => {
-      Gtk.show_uri(window, 'https://github.com/tejashvi/quick-light', Gdk.CURRENT_TIME);
+      if (Gtk.UriLauncher) {
+        const launcher = new Gtk.UriLauncher({
+          uri: 'https://github.com/tejashvi/quick-light',
+        });
+        launcher.launch(window, null, null);
+      } else {
+        Gtk.show_uri(window, 'https://github.com/tejashvi/quick-light', Gdk.CURRENT_TIME);
+      }
     });
     sourceRow.add_suffix(sourceBtn);
     sourceRow.set_activatable_widget(sourceBtn);

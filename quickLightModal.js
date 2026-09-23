@@ -88,6 +88,9 @@ export const QuickLightModal = GObject.registerClass(
       this._previewOverlay = null;
       this._activePreviewFile = null;
       this._toast = null;
+      this._toastTimeoutId = 0;
+      this._closeFailsafeId = 0;
+      this._sourceIds = new Set();
 
       // Initial dimensions
       this._modalWidth = 620;
@@ -98,6 +101,60 @@ export const QuickLightModal = GObject.registerClass(
 
       this.hide();
       this.opacity = 0;
+    }
+
+    /**
+     * Tracked timeout helper to ensure all main loop sources are cleaned up on disable.
+     */
+    _addTimeout(priority, interval, callback) {
+      let id = 0;
+      id = GLib.timeout_add(priority, interval, () => {
+        const res = callback();
+        if (res === GLib.SOURCE_REMOVE) {
+          this._sourceIds.delete(id);
+        }
+        return res;
+      });
+      this._sourceIds.add(id);
+      return id;
+    }
+
+    /**
+     * Tracked idle helper to ensure all main loop sources are cleaned up on disable.
+     */
+    _addIdle(priority, callback) {
+      let id = 0;
+      id = GLib.idle_add(priority, () => {
+        const res = callback();
+        if (res === GLib.SOURCE_REMOVE) {
+          this._sourceIds.delete(id);
+        }
+        return res;
+      });
+      this._sourceIds.add(id);
+      return id;
+    }
+
+    /**
+     * Remove a tracked mainloop source ID.
+     */
+    _removeSource(id) {
+      if (id && this._sourceIds.has(id)) {
+        GLib.source_remove(id);
+        this._sourceIds.delete(id);
+      }
+    }
+
+    /**
+     * Cancel and remove all tracked main loop sources.
+     */
+    _clearSources() {
+      for (const id of this._sourceIds) {
+        GLib.source_remove(id);
+      }
+      this._sourceIds.clear();
+      this._toastTimeoutId = 0;
+      this._closeFailsafeId = 0;
     }
 
     _setupWebSearchWidget() {
@@ -395,6 +452,11 @@ export const QuickLightModal = GObject.registerClass(
       this.remove_all_transitions?.();
       this._disconnectEvents();
 
+      if (this._closeFailsafeId) {
+        this._removeSource(this._closeFailsafeId);
+        this._closeFailsafeId = 0;
+      }
+
       // Release key focus immediately
       global.stage.set_key_focus(null);
 
@@ -422,6 +484,10 @@ export const QuickLightModal = GObject.registerClass(
       const finishClosing = () => {
         if (finished) return;
         finished = true;
+        if (this._closeFailsafeId) {
+          this._removeSource(this._closeFailsafeId);
+          this._closeFailsafeId = 0;
+        }
         this.opacity = 0;
         this.hide();
         this._isVisible = false;
@@ -433,7 +499,8 @@ export const QuickLightModal = GObject.registerClass(
 
       if (useAnimations) {
         // Failsafe timer in case Clutter transition onComplete is dropped
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.round(duration) + 50, () => {
+        this._closeFailsafeId = this._addTimeout(GLib.PRIORITY_DEFAULT, Math.round(duration) + 50, () => {
+          this._closeFailsafeId = 0;
           finishClosing();
           return GLib.SOURCE_REMOVE;
         });
@@ -617,7 +684,7 @@ export const QuickLightModal = GObject.registerClass(
               } else if (typeof this._searchResults._origActivateDefault === 'function') {
                 this._searchResults._origActivateDefault();
               }
-              GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+              this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
                 this.close();
                 return GLib.SOURCE_REMOVE;
               });
@@ -659,7 +726,7 @@ export const QuickLightModal = GObject.registerClass(
                 if (matchedApp) {
                   this.opacity = 0;
                   matchedApp.activate();
-                  GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                  this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
                     this.close();
                     return GLib.SOURCE_REMOVE;
                   });
@@ -671,7 +738,7 @@ export const QuickLightModal = GObject.registerClass(
             // 5. If asynchronous search providers are still running, wait for results before fallback
             if (this._searchResults.searchInProgress) {
               let checkTicks = 0;
-              const checkId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 20, () => {
+              this._addTimeout(GLib.PRIORITY_DEFAULT, 20, () => {
                 checkTicks++;
                 const res = this._findSelectedResult();
                 if (res) {
@@ -681,7 +748,7 @@ export const QuickLightModal = GObject.registerClass(
                   } else if (typeof this._searchResults?._origActivateDefault === 'function') {
                     this._searchResults._origActivateDefault();
                   }
-                  GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                  this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
                     this.close();
                     return GLib.SOURCE_REMOVE;
                   });
@@ -698,7 +765,7 @@ export const QuickLightModal = GObject.registerClass(
                     } else if (typeof this._searchResults?._origActivateDefault === 'function') {
                       this._searchResults._origActivateDefault();
                     }
-                    GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
                       this.close();
                       return GLib.SOURCE_REMOVE;
                     });
@@ -859,7 +926,7 @@ export const QuickLightModal = GObject.registerClass(
                 } else if (typeof this._searchResults?._origActivateDefault === 'function') {
                   this._searchResults._origActivateDefault();
                 }
-                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
                   this.close();
                   return GLib.SOURCE_REMOVE;
                 });
@@ -1027,6 +1094,11 @@ export const QuickLightModal = GObject.registerClass(
         this._activePreviewFile = null;
       }
 
+      if (this._toastTimeoutId) {
+        this._removeSource(this._toastTimeoutId);
+        this._toastTimeoutId = 0;
+      }
+
       if (this._toast) {
         this._toast.hide();
         if (this._toast.get_parent() === this) {
@@ -1147,12 +1219,12 @@ export const QuickLightModal = GObject.registerClass(
       this.opacity = 0;
       this.close();
 
-      GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
         try {
           Gio.AppInfo.launch_default_for_uri(url, null);
         } catch (err) {
           try {
-            GLib.spawn_command_line_async(`xdg-open "${url}"`);
+            Gio.Subprocess.new(['xdg-open', url], Gio.SubprocessFlags.NONE);
           } catch (e) {
             console.warn(`[Quick Light] Error opening web search: ${e.message}`);
           }
@@ -1387,12 +1459,18 @@ export const QuickLightModal = GObject.registerClass(
         this.height - 48,
       );
 
+      if (this._toastTimeoutId) {
+        this._removeSource(this._toastTimeoutId);
+        this._toastTimeoutId = 0;
+      }
+
       this._toast.ease({
         opacity: 255,
         duration: 150,
         mode: Clutter.AnimationMode.EASE_OUT_QUAD,
         onComplete: () => {
-          GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1600, () => {
+          this._toastTimeoutId = this._addTimeout(GLib.PRIORITY_DEFAULT, 1600, () => {
+            this._toastTimeoutId = 0;
             if (this._toast && this._toast.visible) {
               this._toast.ease({
                 opacity: 0,
@@ -1421,7 +1499,7 @@ export const QuickLightModal = GObject.registerClass(
       this.opacity = 0;
       this.close();
 
-      GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
         try {
           const bus = Gio.DBus.session;
           bus.call(
@@ -1439,7 +1517,7 @@ export const QuickLightModal = GObject.registerClass(
                 connection.call_finish(res);
               } catch (e) {
                 try {
-                  GLib.spawn_command_line_async(`nautilus --select "${filePath}"`);
+                  Gio.Subprocess.new(['nautilus', '--select', filePath], Gio.SubprocessFlags.NONE);
                 } catch (err) {
                   console.warn(`[Quick Light] Error revealing file: ${err.message}`);
                 }
@@ -1448,7 +1526,7 @@ export const QuickLightModal = GObject.registerClass(
           );
         } catch (e) {
           try {
-            GLib.spawn_command_line_async(`nautilus --select "${filePath}"`);
+            Gio.Subprocess.new(['nautilus', '--select', filePath], Gio.SubprocessFlags.NONE);
           } catch (err) {
             console.warn(`[Quick Light] Error revealing file: ${err.message}`);
           }
@@ -1674,7 +1752,7 @@ export const QuickLightModal = GObject.registerClass(
       this.opacity = 0;
       this.close();
 
-      GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
         try {
           if (fileObj.resultActor && typeof fileObj.resultActor.activate === 'function') {
             fileObj.resultActor.activate();
@@ -1683,7 +1761,7 @@ export const QuickLightModal = GObject.registerClass(
           }
         } catch (e) {
           try {
-            GLib.spawn_command_line_async(`xdg-open "${fileObj.filePath}"`);
+            Gio.Subprocess.new(['xdg-open', fileObj.filePath], Gio.SubprocessFlags.NONE);
           } catch (err) {
             console.warn(`[Quick Light] Error opening file: ${err.message}`);
           }
@@ -1708,12 +1786,13 @@ export const QuickLightModal = GObject.registerClass(
       const uri = fileResult.file.get_uri();
       const md5 = GLib.compute_checksum_for_string(GLib.ChecksumType.MD5, uri, -1);
       const home = GLib.get_home_dir();
+      const cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'quick-light', 'pdf']);
 
       const candidatePaths = [
         `${home}/.cache/thumbnails/large/${md5}.png`,
         `${home}/.cache/thumbnails/normal/${md5}.png`,
-        `/tmp/ql_pdf_${md5}-1.png`,
-        `/tmp/ql_pdf_${md5}-01.png`,
+        `${cacheDir}/ql_pdf_${md5}-1.png`,
+        `${cacheDir}/ql_pdf_${md5}-01.png`,
       ];
 
       for (const p of candidatePaths) {
@@ -1727,33 +1806,38 @@ export const QuickLightModal = GObject.registerClass(
     _generatePdfPreview(fileResult, callback) {
       const uri = fileResult.file.get_uri();
       const md5 = GLib.compute_checksum_for_string(GLib.ChecksumType.MD5, uri, -1);
-      const outPrefix = `/tmp/ql_pdf_${md5}`;
+      const cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'quick-light', 'pdf']);
+      GLib.mkdir_with_parents(cacheDir, 0o755);
+
+      const outPrefix = `${cacheDir}/ql_pdf_${md5}`;
       const expectedFile = `${outPrefix}-1.png`;
       const altFile = `${outPrefix}-01.png`;
 
-      const cmd = `pdftoppm -png -f 1 -l 1 -scale-to 600 "${fileResult.filePath}" "${outPrefix}"`;
-
       try {
-        GLib.spawn_command_line_async(cmd);
+        const proc = Gio.Subprocess.new(
+          ['pdftoppm', '-png', '-f', '1', '-l', '1', '-scale-to', '600', fileResult.filePath, outPrefix],
+          Gio.SubprocessFlags.NONE,
+        );
 
-        let ticks = 0;
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
-          ticks++;
-          if (GLib.file_test(expectedFile, GLib.FileTest.EXISTS)) {
-            callback(expectedFile);
-            return GLib.SOURCE_REMOVE;
+        proc.wait_check_async(null, (p, res) => {
+          try {
+            if (p.wait_check_finish(res)) {
+              if (GLib.file_test(expectedFile, GLib.FileTest.EXISTS)) {
+                callback(expectedFile);
+              } else if (GLib.file_test(altFile, GLib.FileTest.EXISTS)) {
+                callback(altFile);
+              } else {
+                callback(null);
+              }
+            } else {
+              callback(null);
+            }
+          } catch (err) {
+            callback(null);
           }
-          if (GLib.file_test(altFile, GLib.FileTest.EXISTS)) {
-            callback(altFile);
-            return GLib.SOURCE_REMOVE;
-          }
-          if (ticks > 25) {
-            return GLib.SOURCE_REMOVE;
-          }
-          return GLib.SOURCE_CONTINUE;
         });
-      } catch (e) {
-        console.warn(`[Quick Light] Failed to generate PDF preview: ${e.message}`);
+      } catch (err) {
+        callback(null);
       }
     }
 
@@ -1800,7 +1884,7 @@ export const QuickLightModal = GObject.registerClass(
         this._fullscreenId = global.display.connect(
           'in-fullscreen-changed',
           () => {
-            GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
               this.close();
               return GLib.SOURCE_REMOVE;
             });
@@ -1811,7 +1895,7 @@ export const QuickLightModal = GObject.registerClass(
           'window-created',
           () => {
             if (this._isVisible) {
-              GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+              this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
                 this.close();
                 return GLib.SOURCE_REMOVE;
               });
@@ -1909,7 +1993,7 @@ export const QuickLightModal = GObject.registerClass(
       );
 
       if (!hasFocus) {
-        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
           if (this._isVisible && !this._isTransitioning) {
             const currentFocus = global.stage.get_key_focus();
             const stillHasFocus = currentFocus && (
@@ -2011,7 +2095,7 @@ export const QuickLightModal = GObject.registerClass(
             } else if (typeof this._searchResults?._origActivateDefault === 'function') {
               this._searchResults._origActivateDefault();
             }
-            GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._addIdle(GLib.PRIORITY_DEFAULT_IDLE, () => {
               this.close();
               return GLib.SOURCE_REMOVE;
             });
@@ -2115,6 +2199,8 @@ export const QuickLightModal = GObject.registerClass(
      * Complete cleanup when extension is disabled.
      */
     destroy() {
+      this.remove_all_transitions?.();
+      this._clearSources();
       this._disconnectEvents();
       this._releaseUI();
       if (this._box) {

@@ -25,9 +25,8 @@ export default class QuickLightExtension extends Extension {
     });
 
     // Panel status indicator
-    this._panelIndicator = new PanelIndicator(() => {
-      this._modal.toggle();
-    });
+    this._panelIndicator = null;
+    this._updatePanelIndicator();
 
     // Enable keybind manager
     this.keybindManager.enable();
@@ -35,11 +34,6 @@ export default class QuickLightExtension extends Extension {
 
     // Initial styling
     this.themeStyler.applyStyles(this.settings);
-
-    // Initial panel indicator state
-    if (this.settings.get_boolean('show-panel-indicator')) {
-      this._panelIndicator.show(true);
-    }
 
     // Connect settings changes
     this._settingsSignalIds = [];
@@ -84,6 +78,23 @@ export default class QuickLightExtension extends Extension {
     this.settings = null;
   }
 
+  _updatePanelIndicator() {
+    const show = this.settings.get_boolean('show-panel-indicator');
+    if (show) {
+      if (!this._panelIndicator) {
+        this._panelIndicator = new PanelIndicator(() => {
+          this._modal?.toggle();
+        });
+        Main.panel.addToStatusArea('quick-light', this._panelIndicator);
+      }
+    } else {
+      if (this._panelIndicator) {
+        this._panelIndicator.destroy();
+        this._panelIndicator = null;
+      }
+    }
+  }
+
   _connectSettings() {
     const watchKey = (key, handler) => {
       const id = this.settings.connect(`changed::${key}`, handler);
@@ -92,15 +103,7 @@ export default class QuickLightExtension extends Extension {
 
     watchKey('shortcut-primary', () => this._updateShortcuts());
     watchKey('shortcut-secondary', () => this._updateShortcuts());
-
-    watchKey('show-panel-indicator', () => {
-      const show = this.settings.get_boolean('show-panel-indicator');
-      if (show) {
-        this._panelIndicator.show(true);
-      } else {
-        this._panelIndicator.hide();
-      }
-    });
+    watchKey('show-panel-indicator', () => this._updatePanelIndicator());
 
     const styleKeys = [
       'background-color',
@@ -115,7 +118,7 @@ export default class QuickLightExtension extends Extension {
 
     for (const k of styleKeys) {
       watchKey(k, () => {
-        this.themeStyler.applyStyles(this.settings);
+        this.themeStyler?.applyStyles(this.settings);
       });
     }
   }
@@ -127,7 +130,7 @@ export default class QuickLightExtension extends Extension {
     const primaryShortcuts = this.settings.get_strv('shortcut-primary');
     const primary = primaryShortcuts?.[0] || '<Control><Super>space';
     this.keybindManager.bind('primary', primary, () => {
-      this._modal.toggle();
+      this._modal?.toggle();
     });
 
     // Secondary shortcut
@@ -135,7 +138,7 @@ export default class QuickLightExtension extends Extension {
     const secondary = secondaryShortcuts?.[0];
     if (secondary) {
       this.keybindManager.bind('secondary', secondary, () => {
-        this._modal.toggle();
+        this._modal?.toggle();
       });
     } else {
       this.keybindManager.unbind('secondary');

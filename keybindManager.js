@@ -5,14 +5,15 @@ import GLib from 'gi://GLib';
 
 /**
  * Manages global keyboard shortcuts for Quick Light.
- * Ensures trigger callbacks are dispatched on an idle tick to prevent Clutter 18
- * synchronous event-handler re-entrancy issues.
+ * Ensures trigger callbacks are dispatched on an idle tick to prevent Clutter
+ * synchronous event-handler re-entrancy issues, with complete lifecycle source cleanup.
  */
 export class KeybindManager {
   constructor() {
     this._bindings = new Map();
     this._displaySignalId = 0;
     this._enabled = false;
+    this._idleId = 0;
   }
 
   enable() {
@@ -23,9 +24,14 @@ export class KeybindManager {
       (display, action) => {
         const entry = this._bindings.get(action);
         if (entry && typeof entry.callback === 'function') {
+          if (this._idleId) {
+            GLib.source_remove(this._idleId);
+            this._idleId = 0;
+          }
           // Defer callback to idle loop so the input dispatch completes
           // before any actor manipulation or focus grabbing occurs.
-          GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+          this._idleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._idleId = 0;
             entry.callback();
             return GLib.SOURCE_REMOVE;
           });
@@ -37,6 +43,11 @@ export class KeybindManager {
   }
 
   disable() {
+    if (this._idleId) {
+      GLib.source_remove(this._idleId);
+      this._idleId = 0;
+    }
+
     this.unbindAll();
 
     if (this._displaySignalId && global.display) {

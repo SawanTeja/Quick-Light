@@ -1,69 +1,55 @@
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import Gio from 'gi://Gio';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 import St from 'gi://St';
 
 /**
- * Top bar status icon button to toggle Quick Light with gesture-safe idle dispatch.
+ * Top bar status icon button to toggle Quick Light using GNOME Shell's standard PanelMenu.Button.
  */
-export class PanelIndicator {
-  constructor(onToggleCallback) {
-    this._onToggle = onToggleCallback;
-    this._button = null;
-    this._icon = null;
-  }
+export const PanelIndicator = GObject.registerClass(
+  class PanelIndicator extends PanelMenu.Button {
+    _init(onToggleCallback) {
+      // 0.0 alignment, accessible name 'Quick Light', dontCreateMenu = true
+      super._init(0.0, 'Quick Light', true);
 
-  show(visible = true) {
-    if (!this._button) {
-      this._button = new St.Button({
-        style_class: 'panel-button quick-light-panel-button',
-        can_focus: true,
-        track_hover: true,
-      });
+      this._onToggle = onToggleCallback;
+      this._idleId = 0;
+
+      this.add_style_class_name('quick-light-panel-button');
 
       this._icon = new St.Icon({
         icon_name: 'system-search-symbolic',
         style_class: 'system-status-icon quick-light-panel-icon',
       });
-
-      this._button.set_child(this._icon);
+      this.add_child(this._icon);
 
       // Defer toggle callback to an idle tick so Clutter's press gesture
-      // finishes completely before opening or reparenting the search actors.
-      this._button.connect('button-press-event', () => {
-        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      // finishes completely before opening or focusing the search modal.
+      this.connect('button-press-event', () => {
+        if (this._idleId) {
+          GLib.source_remove(this._idleId);
+          this._idleId = 0;
+        }
+
+        this._idleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+          this._idleId = 0;
           if (typeof this._onToggle === 'function') {
             this._onToggle();
           }
           return GLib.SOURCE_REMOVE;
         });
-        return St.CLUTTER_EVENT_PROPAGATE ?? 0;
+
+        return Clutter.EVENT_PROPAGATE;
       });
+    }
 
-      try {
-        Main.panel._rightBox.insert_child_at_index(this._button, 0);
-      } catch (err) {
-        console.warn(`[Quick Light] Could not add panel indicator: ${err.message}`);
+    destroy() {
+      if (this._idleId) {
+        GLib.source_remove(this._idleId);
+        this._idleId = 0;
       }
+      super.destroy();
     }
-
-    this._button.visible = visible;
-  }
-
-  hide() {
-    if (this._button) {
-      this._button.visible = false;
-    }
-  }
-
-  destroy() {
-    if (this._button) {
-      if (this._button.get_parent()) {
-        this._button.get_parent().remove_child(this._button);
-      }
-      this._button.destroy();
-      this._button = null;
-      this._icon = null;
-    }
-  }
-}
+  },
+);

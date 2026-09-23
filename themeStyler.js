@@ -4,10 +4,10 @@ import St from 'gi://St';
 
 /**
  * Manages runtime dynamic CSS stylesheet generation and injection into GNOME Shell's ThemeContext.
+ * Stores generated stylesheets in the standard user cache directory instead of /tmp.
  */
 export class ThemeStyler {
   constructor() {
-    this._uniqueId = GLib.uuid_string_random();
     this._customFile = null;
     this._lastCss = '';
   }
@@ -128,8 +128,10 @@ export class ThemeStyler {
         // ignore
       }
     } else {
-      const tmpPath = `/tmp/quick-light-theme-${this._uniqueId}.css`;
-      this._customFile = Gio.File.new_for_path(tmpPath);
+      const cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'quick-light']);
+      GLib.mkdir_with_parents(cacheDir, 0o755);
+      const cssPath = GLib.build_filenamev([cacheDir, 'theme.css']);
+      this._customFile = Gio.File.new_for_path(cssPath);
     }
 
     try {
