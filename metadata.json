@@ -1,6 +1,6 @@
 {
   "name": "Quick Light",
-  "description": "A fast, beautiful spotlight-style application search launcher for GNOME Shell.",
+  "description": "A fast, beautiful spotlight-style application search launcher for GNOME Shell. Supports copying selected search file paths to the clipboard.",
   "uuid": "quick-light@tejashvi.dev",
   "shell-version": [
     "45",
